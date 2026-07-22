@@ -1,9 +1,13 @@
+using System.Text.Json.Serialization;
+
 namespace StoryFunTimeApi.Models;
 
 public class Page
 {
     public Guid Id { get; set; }
     public Guid BookId { get; set; }
+
+    [JsonIgnore]
     public Book? Book { get; set; }
 
     public int PageNumber { get; set; }
