@@ -11,4 +11,5 @@ public class Book
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
     public List<Page> Pages { get; set; } = new();
+    public List<Character> Characters { get; set; } = new();
 }

@@ -14,5 +14,6 @@ public class Page
     public string ScriptText { get; set; } = string.Empty;
     public string? OriginalPhotoUrl { get; set; }
     public string? CartoonImageUrl { get; set; }
+    public string? PreviousCartoonImageUrl { get; set; }
     public string? AudioUrl { get; set; }
 }

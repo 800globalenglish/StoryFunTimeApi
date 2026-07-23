@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using StoryFunTimeApi.Data;
 
@@ -11,9 +12,11 @@ using StoryFunTimeApi.Data;
 namespace StoryFunTimeApi.Migrations
 {
     [DbContext(typeof(StoryFunTimeDbContext))]
-    partial class StoryFunTimeDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260722183319_AddCharacterGenderColumn")]
+    partial class AddCharacterGenderColumn
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -61,10 +64,6 @@ namespace StoryFunTimeApi.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
-                    b.Property<string>("AgeRange")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
                     b.Property<Guid>("BookId")
                         .HasColumnType("uniqueidentifier");
 
@@ -93,27 +92,6 @@ namespace StoryFunTimeApi.Migrations
                     b.ToTable("Characters");
                 });
 
-            modelBuilder.Entity("StoryFunTimeApi.Models.CharacterAvatarHistory", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<Guid>("CharacterId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("Url")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("AvatarHistory");
-                });
-
             modelBuilder.Entity("StoryFunTimeApi.Models.Page", b =>
                 {
                     b.Property<Guid>("Id")
@@ -134,9 +112,6 @@ namespace StoryFunTimeApi.Migrations
 
                     b.Property<int>("PageNumber")
                         .HasColumnType("int");
-
-                    b.Property<string>("PreviousCartoonImageUrl")
-                        .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("ScriptText")
                         .IsRequired()

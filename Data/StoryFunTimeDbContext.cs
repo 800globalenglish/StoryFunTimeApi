@@ -10,4 +10,6 @@ public class StoryFunTimeDbContext : DbContext
 
     public DbSet<Book> Books => Set<Book>();
     public DbSet<Page> Pages => Set<Page>();
+    public DbSet<Character> Characters => Set<Character>();
+    public DbSet<CharacterAvatarHistory> AvatarHistory { get; set; }
 }
