@@ -215,7 +215,7 @@ app.MapPost("/books/{id}/characters", async (Guid id, HttpRequest request, Story
     try
     {
         var imageBytes = await File.ReadAllBytesAsync(originalPath);
-        var cartoonUrl = await replicate.CartoonizeImage(imageBytes, file.ContentType ?? "image/jpeg", gender, role, ageRange, extraInstructions);
+        var cartoonUrl = await replicate.GenerateAvatarWithNanoBanana(imageBytes, file.ContentType ?? "image/jpeg", gender, role, ageRange, extraInstructions);
 
         using var httpClient = new HttpClient();
         var cartoonBytes = await httpClient.GetByteArrayAsync(cartoonUrl);
@@ -264,7 +264,7 @@ app.MapPost("/characters/{id}/regenerate-avatar", async (Guid id, RegenerateAvat
     {
         var originalPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", character.OriginalPhotoUrl.TrimStart('/'));
         var imageBytes = await File.ReadAllBytesAsync(originalPath);
-        var cartoonUrl = await replicate.CartoonizeImage(imageBytes, "image/jpeg", character.Gender, character.Role, character.AgeRange, request?.ExtraInstructions);
+        var cartoonUrl = await replicate.GenerateAvatarWithNanoBanana(imageBytes, "image/jpeg", character.Gender, character.Role, character.AgeRange, request?.ExtraInstructions);
 
         using var httpClient = new HttpClient();
         var cartoonBytes = await httpClient.GetByteArrayAsync(cartoonUrl);
@@ -382,7 +382,7 @@ app.MapPost("/pages/{id}/audio", async (Guid id, HttpRequest request, StoryFunTi
 
 // --- Scene Generation ---
 
-app.MapPost("/pages/{id}/generate-scene", async (Guid id, GenerateSceneRequest? request, StoryFunTimeDbContext db, GrokService grok) =>
+app.MapPost("/pages/{id}/generate-scene", async (Guid id, GenerateSceneRequest? request, StoryFunTimeDbContext db, ReplicateService replicate) =>
 {
     var page = await db.Pages.FirstOrDefaultAsync(p => p.Id == id);
     if (page is null) return Results.NotFound($"Page {id} not found");
@@ -405,7 +405,7 @@ app.MapPost("/pages/{id}/generate-scene", async (Guid id, GenerateSceneRequest? 
             avatarImages.Add((bytes, "image/jpeg", character.Name, character.Gender));
         }
 
-        var sceneUrl = await grok.GenerateSceneImage(avatarImages, page.ScriptText, request?.ExtraInstructions);
+        var sceneUrl = await replicate.GenerateSceneWithCharacters(avatarImages, page.ScriptText, request?.ExtraInstructions);
 
         using var httpClient = new HttpClient();
         var sceneBytes = await httpClient.GetByteArrayAsync(sceneUrl);
@@ -413,7 +413,6 @@ app.MapPost("/pages/{id}/generate-scene", async (Guid id, GenerateSceneRequest? 
         var uploadsDir = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "scenes");
         Directory.CreateDirectory(uploadsDir);
 
-        // Back up the current image (if any) to a separate file before overwriting it
         var currentPath = Path.Combine(uploadsDir, $"{id}_scene.jpg");
         var previousPath = Path.Combine(uploadsDir, $"{id}_scene_previous.jpg");
         if (File.Exists(currentPath))
@@ -425,7 +424,6 @@ app.MapPost("/pages/{id}/generate-scene", async (Guid id, GenerateSceneRequest? 
         await File.WriteAllBytesAsync(currentPath, sceneBytes);
         page.CartoonImageUrl = $"/uploads/scenes/{id}_scene.jpg";
         await db.SaveChangesAsync();
-
 
         return Results.Ok(page);
     }
