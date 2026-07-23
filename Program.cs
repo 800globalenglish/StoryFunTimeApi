@@ -144,7 +144,8 @@ app.MapDelete("/books/{id}", async (Guid id, StoryFunTimeDbContext db) =>
 app.MapGet("/books", async (string userId, StoryFunTimeDbContext db) =>
 {
     var books = await db.Books
-        .Where(b => b.UserId == userId)
+        .Where(b => b.UserId == userId && !b.IsLibrary)
+        .Include(b => b.Characters)
         .OrderByDescending(b => b.CreatedAt)
         .ToListAsync();
 
@@ -219,10 +220,29 @@ app.MapPost("/books/{id}/characters", async (Guid id, HttpRequest request, Story
 
         using var httpClient = new HttpClient();
         var cartoonBytes = await httpClient.GetByteArrayAsync(cartoonUrl);
-        var cartoonFileName = $"{character.Id}_avatar.jpg";
+        var cartoonFileName = $"{character.Id}_{Guid.NewGuid()}.jpg";
         var cartoonPath = Path.Combine(uploadsDir, cartoonFileName);
         await File.WriteAllBytesAsync(cartoonPath, cartoonBytes);
         character.CartoonAvatarUrl = $"/uploads/characters/{cartoonFileName}";
+
+        db.AvatarHistory.Add(new CharacterAvatarHistory
+        {
+            Id = Guid.NewGuid(),
+            CharacterId = character.Id,
+            Url = $"/uploads/characters/{cartoonFileName}",
+            CreatedAt = DateTime.UtcNow
+        });
+
+        var stats = await db.UserStats.FirstOrDefaultAsync(s => s.UserId == book.UserId);
+        if (stats is null)
+        {
+            stats = new UserStats { UserId = book.UserId, TotalCharactersCreated = 1 };
+            db.UserStats.Add(stats);
+        }
+        else
+        {
+            stats.TotalCharactersCreated++;
+        }
     }
     catch (Exception ex)
     {
@@ -284,6 +304,22 @@ app.MapPost("/characters/{id}/regenerate-avatar", async (Guid id, RegenerateAvat
             CreatedAt = DateTime.UtcNow
         });
         await db.SaveChangesAsync();
+
+        var regenBook = await db.Books.FirstOrDefaultAsync(b => b.Id == character.BookId);
+        if (regenBook is not null)
+        {
+            var regenStats = await db.UserStats.FirstOrDefaultAsync(s => s.UserId == regenBook.UserId);
+            if (regenStats is null)
+            {
+                regenStats = new UserStats { UserId = regenBook.UserId, TotalCharactersCreated = 1 };
+                db.UserStats.Add(regenStats);
+            }
+            else
+            {
+                regenStats.TotalCharactersCreated++;
+            }
+            await db.SaveChangesAsync();
+        }
 
         await TrimAvatarHistoryAsync(character.Id, db, uploadsDir);
 
@@ -503,6 +539,231 @@ app.MapPost("/characters/{id}/select-avatar", async (Guid id, SelectAvatarReques
 })
 .WithName("SelectCharacterAvatar");
 
+app.MapDelete("/characters/{id}/avatar-history/{historyId}", async (Guid id, Guid historyId, StoryFunTimeDbContext db) =>
+{
+    var history = await db.AvatarHistory.FirstOrDefaultAsync(h => h.Id == historyId && h.CharacterId == id);
+    if (history is null) return Results.NotFound("Avatar history entry not found");
+
+    var character = await db.Characters.FirstOrDefaultAsync(c => c.Id == id);
+    if (character is not null && character.CartoonAvatarUrl == history.Url)
+    {
+        return Results.BadRequest("Can't delete the currently selected avatar. Choose a different one first.");
+    }
+
+    var uploadsDir = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "characters");
+    var fileName = Path.GetFileName(history.Url);
+    var filePath = Path.Combine(uploadsDir, fileName);
+    if (File.Exists(filePath))
+    {
+        File.Delete(filePath);
+    }
+
+    db.AvatarHistory.Remove(history);
+
+    if (character is not null)
+    {
+        var book = await db.Books.FirstOrDefaultAsync(b => b.Id == character.BookId);
+        if (book is not null)
+        {
+            var stats = await db.UserStats.FirstOrDefaultAsync(s => s.UserId == book.UserId);
+            if (stats is null)
+            {
+                stats = new UserStats { UserId = book.UserId, TotalCharactersDeleted = 1 };
+                db.UserStats.Add(stats);
+            }
+            else
+            {
+                stats.TotalCharactersDeleted++;
+            }
+        }
+    }
+    await db.SaveChangesAsync();
+    return Results.NoContent();
+})
+.WithName("DeleteAvatarHistoryEntry");
+
+app.MapGet("/users/{userId}/stats", async (string userId, StoryFunTimeDbContext db) =>
+{
+    var stats = await db.UserStats.FirstOrDefaultAsync(s => s.UserId == userId);
+    return Results.Ok(new { userId, totalCharactersCreated = stats?.TotalCharactersCreated ?? 0, totalCharactersDeleted = stats?.TotalCharactersDeleted ?? 0 });
+})
+.WithName("GetUserStats");
+
+app.MapGet("/users/{userId}/library-book", async (string userId, StoryFunTimeDbContext db) =>
+{
+    var libraryBook = await db.Books.FirstOrDefaultAsync(b => b.UserId == userId && b.IsLibrary);
+    if (libraryBook is null)
+    {
+        libraryBook = new Book
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            Title = "My Characters",
+            Theme = "",
+            Status = "library",
+            IsLibrary = true
+        };
+        db.Books.Add(libraryBook);
+        await db.SaveChangesAsync();
+    }
+    return Results.Ok(new { bookId = libraryBook.Id });
+})
+.WithName("GetOrCreateLibraryBook");
+
+app.MapGet("/users/{userId}/characters", async (string userId, StoryFunTimeDbContext db) =>
+{
+    var characters = await db.Characters
+        .Where(c => db.Books.Any(b => b.Id == c.BookId && b.UserId == userId))
+        .ToListAsync();
+    return Results.Ok(characters);
+})
+.WithName("GetAllCharactersForUser");
+
+app.MapGet("/story-templates", async (StoryFunTimeDbContext db) =>
+{
+    var templates = await db.StoryTemplates
+        .Include(t => t.Pages)
+        .OrderBy(t => t.Title)
+        .ToListAsync();
+    return Results.Ok(templates);
+})
+.WithName("GetStoryTemplates");
+
+app.MapPost("/story-templates", async (CreateStoryTemplateRequest request, StoryFunTimeDbContext db) =>
+{
+    var template = new StoryTemplate
+    {
+        Id = Guid.NewGuid(),
+        Title = request.Title,
+        Theme = request.Theme
+    };
+    db.StoryTemplates.Add(template);
+    await db.SaveChangesAsync();
+    return Results.Created($"/story-templates/{template.Id}", template);
+})
+.WithName("CreateStoryTemplate");
+
+app.MapPost("/story-templates/{id}/pages", async (Guid id, AddTemplatePageRequest request, StoryFunTimeDbContext db) =>
+{
+    var template = await db.StoryTemplates.FirstOrDefaultAsync(t => t.Id == id);
+    if (template is null) return Results.NotFound($"Template {id} not found");
+
+    var page = new StoryTemplatePage
+    {
+        Id = Guid.NewGuid(),
+        StoryTemplateId = id,
+        PageNumber = request.PageNumber,
+        TemplateText = request.TemplateText
+    };
+    db.StoryTemplatePages.Add(page);
+    await db.SaveChangesAsync();
+    return Results.Created($"/story-templates/{id}/pages/{page.Id}", page);
+})
+.WithName("AddTemplatePage");
+
+app.MapPut("/story-template-pages/{id}", async (Guid id, UpdateTemplatePageRequest request, StoryFunTimeDbContext db) =>
+{
+    var page = await db.StoryTemplatePages.FirstOrDefaultAsync(p => p.Id == id);
+    if (page is null) return Results.NotFound($"Template page {id} not found");
+
+    page.TemplateText = request.TemplateText;
+    await db.SaveChangesAsync();
+    return Results.Ok(page);
+})
+.WithName("UpdateTemplatePage");
+
+app.MapDelete("/story-template-pages/{id}", async (Guid id, StoryFunTimeDbContext db) =>
+{
+    var page = await db.StoryTemplatePages.FirstOrDefaultAsync(p => p.Id == id);
+    if (page is null) return Results.NotFound($"Template page {id} not found");
+
+    db.StoryTemplatePages.Remove(page);
+    await db.SaveChangesAsync();
+    return Results.NoContent();
+})
+.WithName("DeleteTemplatePage");
+
+app.MapDelete("/story-templates/{id}", async (Guid id, StoryFunTimeDbContext db) =>
+{
+    var template = await db.StoryTemplates.FirstOrDefaultAsync(t => t.Id == id);
+    if (template is null) return Results.NotFound($"Template {id} not found");
+
+    var pages = await db.StoryTemplatePages.Where(p => p.StoryTemplateId == id).ToListAsync();
+    db.StoryTemplatePages.RemoveRange(pages);
+    db.StoryTemplates.Remove(template);
+    await db.SaveChangesAsync();
+    return Results.NoContent();
+})
+.WithName("DeleteStoryTemplate");
+
+app.MapPost("/books/{id}/apply-template/{templateId}", async (Guid id, Guid templateId, ApplyTemplateRequest request, StoryFunTimeDbContext db) =>
+{
+    var book = await db.Books.FirstOrDefaultAsync(b => b.Id == id);
+    if (book is null) return Results.NotFound($"Book {id} not found");
+
+    var template = await db.StoryTemplates.Include(t => t.Pages).FirstOrDefaultAsync(t => t.Id == templateId);
+    if (template is null) return Results.NotFound($"Template {templateId} not found");
+
+    var characterIds = request.RoleToCharacterId.Values.Distinct().ToList();
+    var characters = await db.Characters.Where(c => characterIds.Contains(c.Id)).ToListAsync();
+    var characterNamesById = characters.ToDictionary(c => c.Id, c => c.Name);
+
+    var newPages = new List<Page>();
+    foreach (var templatePage in template.Pages.OrderBy(p => p.PageNumber))
+    {
+        var text = templatePage.TemplateText;
+        foreach (var mapping in request.RoleToCharacterId)
+        {
+            if (characterNamesById.TryGetValue(mapping.Value, out var characterName))
+            {
+                text = text.Replace("{" + mapping.Key + "}", characterName);
+            }
+        }
+
+        var page = new Page
+        {
+            Id = Guid.NewGuid(),
+            BookId = id,
+            PageNumber = templatePage.PageNumber,
+            ScriptText = text
+        };
+        db.Pages.Add(page);
+        newPages.Add(page);
+    }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(newPages);
+})
+.WithName("ApplyStoryTemplate");
+
+app.MapPost("/books/{id}/characters/copy", async (Guid id, CopyCharactersRequest request, StoryFunTimeDbContext db) =>
+{
+    var book = await db.Books.FirstOrDefaultAsync(b => b.Id == id);
+    if (book is null) return Results.NotFound($"Book {id} not found");
+
+    var sourceCharacters = await db.Characters.Where(c => request.CharacterIds.Contains(c.Id)).ToListAsync();
+    var newCharacters = new List<Character>();
+    foreach (var source in sourceCharacters)
+    {
+        var copy = new Character
+        {
+            Id = Guid.NewGuid(),
+            BookId = id,
+            Name = source.Name,
+            Role = source.Role,
+            Gender = source.Gender,
+            AgeRange = source.AgeRange,
+            OriginalPhotoUrl = source.OriginalPhotoUrl,
+            CartoonAvatarUrl = source.CartoonAvatarUrl
+        };
+        db.Characters.Add(copy);
+        newCharacters.Add(copy);
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(newCharacters);
+})
+.WithName("CopyCharactersToBook");
+
 async Task TrimAvatarHistoryAsync(Guid characterId, StoryFunTimeDbContext db, string uploadsDir)
 {
     var all = await db.AvatarHistory
@@ -545,4 +806,9 @@ record RegenerateAvatarRequest(string? ExtraInstructions);
 record GenerateSceneRequest(string? ExtraInstructions);
 
 record SelectAvatarRequest(string Url);
+record CopyCharactersRequest(List<Guid> CharacterIds);
+record CreateStoryTemplateRequest(string Title, string Theme);
+record AddTemplatePageRequest(int PageNumber, string TemplateText);
+record UpdateTemplatePageRequest(string TemplateText);
+record ApplyTemplateRequest(Dictionary<string, Guid> RoleToCharacterId);
 

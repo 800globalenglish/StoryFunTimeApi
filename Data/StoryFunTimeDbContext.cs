@@ -12,4 +12,7 @@ public class StoryFunTimeDbContext : DbContext
     public DbSet<Page> Pages => Set<Page>();
     public DbSet<Character> Characters => Set<Character>();
     public DbSet<CharacterAvatarHistory> AvatarHistory { get; set; }
+    public DbSet<UserStats> UserStats { get; set; }
+    public DbSet<StoryTemplate> StoryTemplates { get; set; }
+    public DbSet<StoryTemplatePage> StoryTemplatePages { get; set; }
 }

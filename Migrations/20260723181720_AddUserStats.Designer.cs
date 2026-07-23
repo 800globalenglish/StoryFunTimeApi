@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using StoryFunTimeApi.Data;
 
@@ -11,9 +12,11 @@ using StoryFunTimeApi.Data;
 namespace StoryFunTimeApi.Migrations
 {
     [DbContext(typeof(StoryFunTimeDbContext))]
-    partial class StoryFunTimeDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260723181720_AddUserStats")]
+    partial class AddUserStats
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -30,9 +33,6 @@ namespace StoryFunTimeApi.Migrations
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
-
-                    b.Property<bool>("IsLibrary")
-                        .HasColumnType("bit");
 
                     b.Property<string>("Status")
                         .IsRequired()
@@ -152,60 +152,12 @@ namespace StoryFunTimeApi.Migrations
                     b.ToTable("Pages");
                 });
 
-            modelBuilder.Entity("StoryFunTimeApi.Models.StoryTemplate", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<DateTime>("CreatedAt")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("Theme")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("Title")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("StoryTemplates");
-                });
-
-            modelBuilder.Entity("StoryFunTimeApi.Models.StoryTemplatePage", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<int>("PageNumber")
-                        .HasColumnType("int");
-
-                    b.Property<Guid>("StoryTemplateId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("TemplateText")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("StoryTemplateId");
-
-                    b.ToTable("StoryTemplatePages");
-                });
-
             modelBuilder.Entity("StoryFunTimeApi.Models.UserStats", b =>
                 {
                     b.Property<string>("UserId")
                         .HasColumnType("nvarchar(450)");
 
-                    b.Property<int>("TotalCharactersCreated")
-                        .HasColumnType("int");
-
-                    b.Property<int>("TotalCharactersDeleted")
+                    b.Property<int>("TotalAvatarsDeleted")
                         .HasColumnType("int");
 
                     b.HasKey("UserId");
@@ -235,26 +187,10 @@ namespace StoryFunTimeApi.Migrations
                     b.Navigation("Book");
                 });
 
-            modelBuilder.Entity("StoryFunTimeApi.Models.StoryTemplatePage", b =>
-                {
-                    b.HasOne("StoryFunTimeApi.Models.StoryTemplate", "StoryTemplate")
-                        .WithMany("Pages")
-                        .HasForeignKey("StoryTemplateId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("StoryTemplate");
-                });
-
             modelBuilder.Entity("StoryFunTimeApi.Models.Book", b =>
                 {
                     b.Navigation("Characters");
 
-                    b.Navigation("Pages");
-                });
-
-            modelBuilder.Entity("StoryFunTimeApi.Models.StoryTemplate", b =>
-                {
                     b.Navigation("Pages");
                 });
 #pragma warning restore 612, 618

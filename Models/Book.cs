@@ -7,6 +7,7 @@ public class Book
     public string Title { get; set; } = string.Empty;
     public string Theme { get; set; } = string.Empty;
     public string Status { get; set; } = "draft";
+    public bool IsLibrary { get; set; } = false;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 
