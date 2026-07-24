@@ -23,6 +23,7 @@ builder.Services.AddCors(options =>
 builder.Services.AddHttpClient<GrokService>();
 
 builder.Services.AddHttpClient<ReplicateService>();
+builder.Services.AddSingleton<VideoService>();
 
 builder.Services.AddSingleton<PhotoFilterService>();
 
@@ -708,6 +709,11 @@ app.MapPost("/books/{id}/apply-template/{templateId}", async (Guid id, Guid temp
     var characters = await db.Characters.Where(c => characterIds.Contains(c.Id)).ToListAsync();
     var characterNamesById = characters.ToDictionary(c => c.Id, c => c.Name);
 
+    // A book represents one story at a time - clear any existing pages before applying a template
+    var existingPages = await db.Pages.Where(p => p.BookId == id).ToListAsync();
+    db.Pages.RemoveRange(existingPages);
+
+
     var newPages = new List<Page>();
     foreach (var templatePage in template.Pages.OrderBy(p => p.PageNumber))
     {
@@ -735,6 +741,54 @@ app.MapPost("/books/{id}/apply-template/{templateId}", async (Guid id, Guid temp
     return Results.Ok(newPages);
 })
 .WithName("ApplyStoryTemplate");
+
+app.MapPost("/books/{id}/generate-video", async (Guid id, StoryFunTimeDbContext db, VideoService videoService) =>
+{
+    var book = await db.Books.FirstOrDefaultAsync(b => b.Id == id);
+    if (book is null) return Results.NotFound($"Book {id} not found");
+
+    var pages = await db.Pages.Where(p => p.BookId == id).OrderBy(p => p.PageNumber).ToListAsync();
+    if (pages.Count == 0) return Results.BadRequest("This book has no pages yet.");
+
+    var wwwroot = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot");
+    var missing = new List<string>();
+    var pageInputs = new List<(int PageNumber, string ImagePath, string AudioPath)>();
+
+    foreach (var page in pages)
+    {
+        if (page.CartoonImageUrl is null || page.AudioUrl is null)
+        {
+            missing.Add($"Page {page.PageNumber}");
+            continue;
+        }
+        pageInputs.Add((
+            page.PageNumber,
+            Path.Combine(wwwroot, page.CartoonImageUrl.TrimStart('/')),
+            Path.Combine(wwwroot, page.AudioUrl.TrimStart('/'))
+        ));
+    }
+
+    if (missing.Count > 0)
+    {
+        return Results.BadRequest($"These pages are missing a scene image and/or voice recording, so the video can't be made yet: {string.Join(", ", missing)}");
+    }
+
+    try
+    {
+        var outputDir = Path.Combine(wwwroot, "uploads", "videos");
+        var finalPath = await videoService.GenerateBookVideo(pageInputs, outputDir, id.ToString());
+
+        book.VideoUrl = $"/uploads/videos/{id}.mp4";
+        await db.SaveChangesAsync();
+
+        return Results.Ok(book);
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem($"Video generation failed: {ex.Message}");
+    }
+})
+.WithName("GenerateBookVideo");
 
 app.MapPost("/books/{id}/characters/copy", async (Guid id, CopyCharactersRequest request, StoryFunTimeDbContext db) =>
 {
