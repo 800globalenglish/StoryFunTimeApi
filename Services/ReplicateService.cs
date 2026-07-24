@@ -28,7 +28,6 @@ public class ReplicateService
         var prompt = $"children's storybook illustration portrait, warm cartoon art style, bold clean lines, soft colors, solid plain single-color background, no patterns{extraNote}";
         var negativePrompt = "photo, photorealistic, realistic, text, caption, watermark, logo, extra limbs, deformed, blurry, dark, scary, low quality, background clutter, animals, characters, pattern, busy background";
 
-        // 1. Kick off the prediction
         var requestBody = new
         {
             version = InstantIdVersion,
@@ -60,10 +59,7 @@ public class ReplicateService
         var getUrl = startDoc.RootElement.GetProperty("urls").GetProperty("get").GetString()
             ?? throw new Exception("No polling URL returned from Replicate");
 
-        // 2. Poll until the prediction finishes (success or failure), with a timeout.
-        // Replicate models can take 1-3 minutes to "cold start" if not recently used,
-        // even though a "warm" model typically finishes in under 20 seconds.
-        var maxAttempts = 180; // ~3 minutes at 1s intervals
+        var maxAttempts = 180;
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
             await Task.Delay(1000);
@@ -79,7 +75,6 @@ public class ReplicateService
             if (status == "succeeded")
             {
                 var output = pollDoc.RootElement.GetProperty("output");
-                // Output can be a single URL string, or an array of URL strings depending on the model version
                 if (output.ValueKind == JsonValueKind.Array && output.GetArrayLength() > 0)
                 {
                     return output[0].GetString() ?? throw new Exception("Empty output URL from Replicate");
@@ -96,17 +91,38 @@ public class ReplicateService
                 var error = pollDoc.RootElement.TryGetProperty("error", out var errProp) ? errProp.GetString() : "unknown error";
                 throw new Exception($"Replicate prediction {status}: {error}");
             }
-            // otherwise status is "starting" or "processing" - keep polling
         }
 
         throw new Exception("Replicate prediction timed out after 3 minutes");
     }
 
-    // Takes a scene image (from Grok) and swaps in a specific character's real face/likeness,
-    // using their InstantID avatar as the source of truth for what they actually look like.
-    // Generates a cartoon avatar using nano-banana instead of InstantID - this model runs "warm"
-    // (no cold-start delay) and has proven strong at preserving identity from reference images.
+    // Public entry point: tries avatar generation up to 3 times before giving up, since
+    // generative AI models occasionally fail on a single attempt for no reproducible reason.
     public async Task<string> GenerateAvatarWithNanoBanana(byte[] imageBytes, string contentType, string gender, string role, string ageRange, string? extraInstructions = null)
+    {
+        const int maxRetries = 3;
+        Exception? lastError = null;
+
+        for (var attempt = 1; attempt <= maxRetries; attempt++)
+        {
+            try
+            {
+                return await GenerateAvatarWithNanoBananaAttempt(imageBytes, contentType, gender, role, ageRange, extraInstructions);
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+                if (attempt < maxRetries)
+                {
+                    await Task.Delay(2000);
+                }
+            }
+        }
+
+        throw new Exception($"Avatar generation failed after {maxRetries} attempts: {lastError?.Message}");
+    }
+
+    private async Task<string> GenerateAvatarWithNanoBananaAttempt(byte[] imageBytes, string contentType, string gender, string role, string ageRange, string? extraInstructions = null)
     {
         var dataUri = $"data:{contentType};base64,{Convert.ToBase64String(imageBytes)}";
         var isAnimal = role == "Pet";
@@ -201,9 +217,33 @@ public class ReplicateService
         throw new Exception("Replicate avatar generation timed out after 60 seconds");
     }
 
-    // Generates a full scene directly, using each character's real avatar as a reference image,
-    // so the model preserves everyone's actual likeness in one single generation step.
+    // Public entry point: tries scene generation up to 3 times before giving up, same reasoning
+    // as the avatar retry logic above.
     public async Task<string> GenerateSceneWithCharacters(List<(byte[] Bytes, string ContentType, string Name, string Gender)> characterAvatars, string sceneDescription, string? extraInstructions = null)
+    {
+        const int maxRetries = 3;
+        Exception? lastError = null;
+
+        for (var attempt = 1; attempt <= maxRetries; attempt++)
+        {
+            try
+            {
+                return await GenerateSceneWithCharactersAttempt(characterAvatars, sceneDescription, extraInstructions);
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+                if (attempt < maxRetries)
+                {
+                    await Task.Delay(2000);
+                }
+            }
+        }
+
+        throw new Exception($"Scene generation failed after {maxRetries} attempts: {lastError?.Message}");
+    }
+
+    private async Task<string> GenerateSceneWithCharactersAttempt(List<(byte[] Bytes, string ContentType, string Name, string Gender)> characterAvatars, string sceneDescription, string? extraInstructions = null)
     {
         var imageInputs = characterAvatars
             .Select(c => $"data:{c.ContentType};base64,{Convert.ToBase64String(c.Bytes)}")

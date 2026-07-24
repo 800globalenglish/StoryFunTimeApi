@@ -24,6 +24,7 @@ builder.Services.AddHttpClient<GrokService>();
 
 builder.Services.AddHttpClient<ReplicateService>();
 builder.Services.AddSingleton<VideoService>();
+builder.Services.AddSingleton<TranscriptionService>();
 
 builder.Services.AddSingleton<PhotoFilterService>();
 
@@ -388,7 +389,7 @@ app.MapPost("/pages/{id}/photo", async (Guid id, HttpRequest request, StoryFunTi
 })
 .WithName("UploadPagePhoto");
 
-app.MapPost("/pages/{id}/audio", async (Guid id, HttpRequest request, StoryFunTimeDbContext db) =>
+app.MapPost("/pages/{id}/audio", async (Guid id, HttpRequest request, StoryFunTimeDbContext db, TranscriptionService transcriptionService) =>
 {
     var page = await db.Pages.FirstOrDefaultAsync(p => p.Id == id);
     if (page is null) return Results.NotFound($"Page {id} not found");
@@ -411,6 +412,19 @@ app.MapPost("/pages/{id}/audio", async (Guid id, HttpRequest request, StoryFunTi
     }
 
     page.AudioUrl = $"/uploads/audio/{fileName}";
+
+    try
+    {
+        var transcribedText = await transcriptionService.Transcribe(filePath);
+        if (!string.IsNullOrWhiteSpace(transcribedText))
+        {
+            page.ScriptText = transcribedText;
+        }
+    }
+    catch (Exception transcribeEx)
+    {
+        Console.WriteLine($"[Transcription] FAILED: {transcribeEx.Message}");
+    }
     await db.SaveChangesAsync();
 
     return Results.Ok(page);
