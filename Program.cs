@@ -497,6 +497,10 @@ app.MapPost("/books/{id}/generate-script", async (Guid id, GenerateScriptRequest
 
     var pageCount = request.PageCount ?? 5;
 
+    if (!string.IsNullOrWhiteSpace(request.Title)) book.Title = request.Title;
+    if (!string.IsNullOrWhiteSpace(request.Theme)) book.Theme = request.Theme;
+    await db.SaveChangesAsync();
+
     try
     {
         var pages = await grok.GenerateStoryPages(book.Title, book.Theme, pageCount, characterDescriptions);
@@ -865,7 +869,7 @@ record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
 
 record CreateBookRequest(string UserId, string Title, string Theme);
 record CreatePageRequest(int PageNumber, string ScriptText, string? OriginalPhotoUrl, string? CartoonImageUrl, string? AudioUrl);
-record GenerateScriptRequest(int? PageCount);
+record GenerateScriptRequest(int? PageCount, string? Title, string? Theme);
 
 record UpdatePageTextRequest(string ScriptText);
 
