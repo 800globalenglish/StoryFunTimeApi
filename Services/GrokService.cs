@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.Json;
 using static System.Net.Mime.MediaTypeNames;
 
@@ -15,7 +15,7 @@ public class GrokService
         _apiKey = configuration["Grok:ApiKey"] ?? throw new Exception("Grok API key not configured");
     }
 
-    public async Task<List<string>> GenerateStoryPages(string title, string theme, int pageCount, List<string> characterDescriptions)
+    public async Task<List<string>> GenerateStoryPages(string title, string theme, int pageCount, List<string> characterDescriptions, string? extraInstructions = null)
     {
         var charactersText = characterDescriptions.Count > 0
     ? $"The story features these real people, who should be called by name throughout: {string.Join(", ", characterDescriptions)}."
@@ -25,6 +25,7 @@ public class GrokService
 {charactersText}
 Break it into exactly {pageCount} pages, each 1-3 sentences, simple enough for a young child to follow when read aloud.
 The story should be gentle, positive, and suitable for bedtime reading.
+{(!string.IsNullOrWhiteSpace(extraInstructions) ? $"\nAdditional instructions: {extraInstructions}." : "")}
 Respond with ONLY a JSON array of strings, one string per page, in order. No other text, no markdown formatting, just the raw JSON array.
 Example format: [""Page 1 text here."", ""Page 2 text here.""]";
 

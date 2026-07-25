@@ -82,7 +82,7 @@ app.MapPut("/pages/{id}", async (Guid id, UpdatePageTextRequest request, StoryFu
 })
 .WithName("UpdatePageText");
 
-app.MapPost("/pages/{id}/regenerate-text", async (Guid id, StoryFunTimeDbContext db, GrokService grok) =>
+app.MapPost("/pages/{id}/regenerate-text", async (Guid id, RegenerateTextRequest? request, StoryFunTimeDbContext db, GrokService grok) =>
 {
     var page = await db.Pages.FirstOrDefaultAsync(p => p.Id == id);
     if (page is null) return Results.NotFound($"Page {id} not found");
@@ -95,7 +95,7 @@ app.MapPost("/pages/{id}/regenerate-text", async (Guid id, StoryFunTimeDbContext
 
     try
     {
-        var newPages = await grok.GenerateStoryPages(book.Title, book.Theme, 1, characterDescriptions);
+        var newPages = await grok.GenerateStoryPages(book.Title, book.Theme, 1, characterDescriptions, request?.ExtraInstructions);
         page.ScriptText = newPages.FirstOrDefault() ?? page.ScriptText;
         await db.SaveChangesAsync();
 
@@ -875,6 +875,7 @@ record GenerateSceneRequest(string? ExtraInstructions);
 
 record SelectAvatarRequest(string Url);
 record CopyCharactersRequest(List<Guid> CharacterIds);
+record RegenerateTextRequest(string? ExtraInstructions);
 record CreateStoryTemplateRequest(string Title, string Theme);
 record AddTemplatePageRequest(int PageNumber, string TemplateText);
 record UpdateTemplatePageRequest(string TemplateText);
