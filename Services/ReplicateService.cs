@@ -250,7 +250,7 @@ public class ReplicateService
             .ToList();
 
         var characterNotes = string.Join(" ", characterAvatars.Select((c, i) =>
-            $"Reference image {i + 1} shows {c.Name}. Copy {c.Name}'s exact hair color, hair style, eye color, skin tone, and any distinguishing features (glasses, facial hair, etc) precisely from their reference image - do not default to a generic or average appearance."));
+            $"Reference image {i + 1} shows {c.Name}. Copy {c.Name}'s exact hair color, hair style, eye color, skin tone, and any distinguishing features (glasses, facial hair, etc) precisely from their reference image - do not default to a generic or average appearance. Also keep {c.Name}'s clothing and any items they are wearing or holding (such as a hat, glasses, or other accessories) consistent with their reference image."));
 
         var extraNote = !string.IsNullOrWhiteSpace(extraInstructions) ? $" {extraInstructions}." : "";
 
