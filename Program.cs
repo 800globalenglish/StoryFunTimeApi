@@ -10,6 +10,7 @@ using StoryFunTimeApi.Services;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using static OwnershipHelpers;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -131,8 +132,12 @@ app.MapPost("/books", async (CreateBookRequest request, StoryFunTimeDbContext db
 .RequireAuthorization()
 .WithName("CreateBook");
 
-app.MapGet("/books/{id}", async (Guid id, StoryFunTimeDbContext db) =>
+app.MapGet("/books/{id}", async (Guid id, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    if (!await UserOwnsBookAsync(id, userId.Value, db)) return Results.NotFound();
+
     var book = await db.Books
         .Include(b => b.Pages.OrderBy(p => p.PageNumber))
         .Include(b => b.Characters)
@@ -140,10 +145,15 @@ app.MapGet("/books/{id}", async (Guid id, StoryFunTimeDbContext db) =>
 
     return book is not null ? Results.Ok(book) : Results.NotFound();
 })
+.RequireAuthorization()
 .WithName("GetBook");
 
-app.MapPut("/pages/{id}", async (Guid id, UpdatePageTextRequest request, StoryFunTimeDbContext db) =>
+app.MapPut("/pages/{id}", async (Guid id, UpdatePageTextRequest request, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    if (!await UserOwnsPageAsync(id, userId.Value, db)) return Results.NotFound();
+
     var page = await db.Pages.FirstOrDefaultAsync(p => p.Id == id);
     if (page is null) return Results.NotFound($"Page {id} not found");
 
@@ -152,10 +162,15 @@ app.MapPut("/pages/{id}", async (Guid id, UpdatePageTextRequest request, StoryFu
 
     return Results.Ok(page);
 })
+.RequireAuthorization()
 .WithName("UpdatePageText");
 
-app.MapPost("/pages/{id}/regenerate-text", async (Guid id, RegenerateTextRequest? request, StoryFunTimeDbContext db, GrokService grok) =>
+app.MapPost("/pages/{id}/regenerate-text", async (Guid id, RegenerateTextRequest? request, StoryFunTimeDbContext db, GrokService grok, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    if (!await UserOwnsPageAsync(id, userId.Value, db)) return Results.NotFound();
+
     var page = await db.Pages.FirstOrDefaultAsync(p => p.Id == id);
     if (page is null) return Results.NotFound($"Page {id} not found");
 
@@ -178,20 +193,30 @@ app.MapPost("/pages/{id}/regenerate-text", async (Guid id, RegenerateTextRequest
         return Results.Problem($"Failed to regenerate text: {ex.Message}");
     }
 })
+.RequireAuthorization()
 .WithName("RegeneratePageText");
 
-app.MapDelete("/books/{id}/pages", async (Guid id, StoryFunTimeDbContext db) =>
+app.MapDelete("/books/{id}/pages", async (Guid id, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    if (!await UserOwnsBookAsync(id, userId.Value, db)) return Results.NotFound();
+
     var pages = await db.Pages.Where(p => p.BookId == id).ToListAsync();
     db.Pages.RemoveRange(pages);
     await db.SaveChangesAsync();
 
     return Results.NoContent();
 })
+.RequireAuthorization()
 .WithName("DeleteAllPagesForBook");
 
-app.MapPost("/pages/{id}/revert-scene", async (Guid id, StoryFunTimeDbContext db) =>
+app.MapPost("/pages/{id}/revert-scene", async (Guid id, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    if (!await UserOwnsPageAsync(id, userId.Value, db)) return Results.NotFound();
+
     var page = await db.Pages.FirstOrDefaultAsync(p => p.Id == id);
     if (page is null) return Results.NotFound($"Page {id} not found");
     if (page.PreviousCartoonImageUrl is null) return Results.BadRequest("No previous scene to revert to");
@@ -201,10 +226,15 @@ app.MapPost("/pages/{id}/revert-scene", async (Guid id, StoryFunTimeDbContext db
 
     return Results.Ok(page);
 })
+.RequireAuthorization()
 .WithName("RevertPageScene");
 
-app.MapDelete("/books/{id}", async (Guid id, StoryFunTimeDbContext db) =>
+app.MapDelete("/books/{id}", async (Guid id, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    if (!await UserOwnsBookAsync(id, userId.Value, db)) return Results.NotFound();
+
     var book = await db.Books.FirstOrDefaultAsync(b => b.Id == id);
     if (book is null) return Results.NotFound($"Book {id} not found");
 
@@ -213,6 +243,7 @@ app.MapDelete("/books/{id}", async (Guid id, StoryFunTimeDbContext db) =>
 
     return Results.NoContent();
 })
+.RequireAuthorization()
 .WithName("DeleteBook");
 
 app.MapGet("/books", async (StoryFunTimeDbContext db, HttpContext ctx) =>
@@ -233,10 +264,11 @@ app.MapGet("/books", async (StoryFunTimeDbContext db, HttpContext ctx) =>
 
 // --- Pages ---
 
-app.MapPost("/books/{id}/pages", async (Guid id, CreatePageRequest request, StoryFunTimeDbContext db) =>
+app.MapPost("/books/{id}/pages", async (Guid id, CreatePageRequest request, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
-    var bookExists = await db.Books.AnyAsync(b => b.Id == id);
-    if (!bookExists) return Results.NotFound($"Book {id} not found");
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    if (!await UserOwnsBookAsync(id, userId.Value, db)) return Results.NotFound($"Book {id} not found");
 
     var page = new Page
     {
@@ -254,15 +286,20 @@ app.MapPost("/books/{id}/pages", async (Guid id, CreatePageRequest request, Stor
 
     return Results.Created($"/books/{id}/pages/{page.Id}", page);
 })
+.RequireAuthorization()
 .WithName("AddPageToBook");
 
 // --- Audio Upload ---
 // --- Characters ---
 
-app.MapPost("/books/{id}/characters", async (Guid id, HttpRequest request, StoryFunTimeDbContext db, ReplicateService replicate) =>
+app.MapPost("/books/{id}/characters", async (Guid id, HttpRequest request, StoryFunTimeDbContext db, ReplicateService replicate, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+
     var book = await db.Books.FirstOrDefaultAsync(b => b.Id == id);
     if (book is null) return Results.NotFound($"Book {id} not found");
+    if (book.UserId != userId.Value.ToString()) return Results.NotFound($"Book {id} not found");
     if (!request.HasFormContentType) return Results.BadRequest("Expected form data");
     var form = await request.ReadFormAsync();
     var name = form["name"].ToString();
@@ -332,17 +369,27 @@ app.MapPost("/books/{id}/characters", async (Guid id, HttpRequest request, Story
     await db.SaveChangesAsync();
     return Results.Created($"/books/{id}/characters/{character.Id}", character);
 })
+.RequireAuthorization()
 .WithName("AddCharacter");
 
-app.MapGet("/books/{id}/characters", async (Guid id, StoryFunTimeDbContext db) =>
+app.MapGet("/books/{id}/characters", async (Guid id, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    if (!await UserOwnsBookAsync(id, userId.Value, db)) return Results.NotFound();
+
     var characters = await db.Characters.Where(c => c.BookId == id).ToListAsync();
     return Results.Ok(characters);
 })
+.RequireAuthorization()
 .WithName("GetCharactersForBook");
 
-app.MapDelete("/characters/{id}", async (Guid id, StoryFunTimeDbContext db) =>
+app.MapDelete("/characters/{id}", async (Guid id, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    if (!await UserOwnsCharacterAsync(id, userId.Value, db)) return Results.NotFound();
+
     var character = await db.Characters.FirstOrDefaultAsync(c => c.Id == id);
     if (character is null) return Results.NotFound($"Character {id} not found");
 
@@ -351,10 +398,15 @@ app.MapDelete("/characters/{id}", async (Guid id, StoryFunTimeDbContext db) =>
 
     return Results.NoContent();
 })
+.RequireAuthorization()
 .WithName("DeleteCharacter");
 
-app.MapPost("/characters/{id}/regenerate-avatar", async (Guid id, RegenerateAvatarRequest? request, StoryFunTimeDbContext db, ReplicateService replicate) =>
+app.MapPost("/characters/{id}/regenerate-avatar", async (Guid id, RegenerateAvatarRequest? request, StoryFunTimeDbContext db, ReplicateService replicate, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    if (!await UserOwnsCharacterAsync(id, userId.Value, db)) return Results.NotFound();
+
     var character = await db.Characters.FirstOrDefaultAsync(c => c.Id == id);
     if (character is null) return Results.NotFound($"Character {id} not found");
     if (character.OriginalPhotoUrl is null) return Results.BadRequest("No original photo to regenerate from");
@@ -408,14 +460,19 @@ app.MapPost("/characters/{id}/regenerate-avatar", async (Guid id, RegenerateAvat
         return Results.Problem($"Failed to regenerate avatar: {ex.Message}");
     }
 })
+.RequireAuthorization()
 .WithName("RegenerateCharacterAvatar");
 
 
 
 // --- Photo Upload + Cartoonize ---
 
-app.MapPost("/pages/{id}/photo", async (Guid id, HttpRequest request, StoryFunTimeDbContext db, GrokService grok) =>
+app.MapPost("/pages/{id}/photo", async (Guid id, HttpRequest request, StoryFunTimeDbContext db, GrokService grok, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    if (!await UserOwnsPageAsync(id, userId.Value, db)) return Results.NotFound($"Page {id} not found");
+
     var page = await db.Pages.FirstOrDefaultAsync(p => p.Id == id);
     if (page is null) return Results.NotFound($"Page {id} not found");
 
@@ -463,10 +520,15 @@ app.MapPost("/pages/{id}/photo", async (Guid id, HttpRequest request, StoryFunTi
     await db.SaveChangesAsync();
     return Results.Ok(page);
 })
+.RequireAuthorization()
 .WithName("UploadPagePhoto");
 
-app.MapPost("/pages/{id}/audio", async (Guid id, HttpRequest request, StoryFunTimeDbContext db, TranscriptionService transcriptionService) =>
+app.MapPost("/pages/{id}/audio", async (Guid id, HttpRequest request, StoryFunTimeDbContext db, TranscriptionService transcriptionService, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    if (!await UserOwnsPageAsync(id, userId.Value, db)) return Results.NotFound($"Page {id} not found");
+
     var page = await db.Pages.FirstOrDefaultAsync(p => p.Id == id);
     if (page is null) return Results.NotFound($"Page {id} not found");
 
@@ -505,12 +567,17 @@ app.MapPost("/pages/{id}/audio", async (Guid id, HttpRequest request, StoryFunTi
 
     return Results.Ok(page);
 })
+.RequireAuthorization()
 .WithName("UploadPageAudio");
 
 // --- Scene Generation ---
 
-app.MapPost("/pages/{id}/generate-scene", async (Guid id, GenerateSceneRequest? request, StoryFunTimeDbContext db, ReplicateService replicate) =>
+app.MapPost("/pages/{id}/generate-scene", async (Guid id, GenerateSceneRequest? request, StoryFunTimeDbContext db, ReplicateService replicate, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    if (!await UserOwnsPageAsync(id, userId.Value, db)) return Results.NotFound($"Page {id} not found");
+
     var page = await db.Pages.FirstOrDefaultAsync(p => p.Id == id);
     if (page is null) return Results.NotFound($"Page {id} not found");
 
@@ -559,14 +626,19 @@ app.MapPost("/pages/{id}/generate-scene", async (Guid id, GenerateSceneRequest? 
         return Results.Problem($"Scene generation failed: {ex.Message}");
     }
 })
+.RequireAuthorization()
 .WithName("GenerateSceneForPage");
 
 // --- Story Generation ---
 
-app.MapPost("/books/{id}/generate-script", async (Guid id, GenerateScriptRequest request, StoryFunTimeDbContext db, GrokService grok) =>
+app.MapPost("/books/{id}/generate-script", async (Guid id, GenerateScriptRequest request, StoryFunTimeDbContext db, GrokService grok, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+
     var book = await db.Books.FirstOrDefaultAsync(b => b.Id == id);
     if (book is null) return Results.NotFound($"Book {id} not found");
+    if (book.UserId != userId.Value.ToString()) return Results.NotFound($"Book {id} not found");
 
     var characters = await db.Characters.Where(c => c.BookId == id).ToListAsync();
     var characterDescriptions = characters.Select(c => $"{c.Name} ({c.Role})").ToList();
@@ -587,6 +659,7 @@ app.MapPost("/books/{id}/generate-script", async (Guid id, GenerateScriptRequest
         return Results.Problem($"Story generation failed: {ex.Message}");
     }
 })
+.RequireAuthorization()
 .WithName("GenerateScript");
 
 // --- sample endpoint, left as-is for now ---
@@ -598,7 +671,7 @@ var summaries = new[]
 
 app.MapGet("/weatherforecast", () =>
 {
-    var forecast =  Enumerable.Range(1, 5).Select(index =>
+    var forecast = Enumerable.Range(1, 5).Select(index =>
         new WeatherForecast
         (
             DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
@@ -610,18 +683,27 @@ app.MapGet("/weatherforecast", () =>
 })
 .WithName("GetWeatherForecast");
 
-app.MapGet("/characters/{id}/avatar-history", async (Guid id, StoryFunTimeDbContext db) =>
+app.MapGet("/characters/{id}/avatar-history", async (Guid id, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    if (!await UserOwnsCharacterAsync(id, userId.Value, db)) return Results.NotFound();
+
     var history = await db.AvatarHistory
         .Where(h => h.CharacterId == id)
         .OrderByDescending(h => h.CreatedAt)
         .ToListAsync();
     return Results.Ok(history);
 })
+.RequireAuthorization()
 .WithName("GetAvatarHistory");
 
-app.MapPost("/characters/{id}/select-avatar", async (Guid id, SelectAvatarRequest request, StoryFunTimeDbContext db) =>
+app.MapPost("/characters/{id}/select-avatar", async (Guid id, SelectAvatarRequest request, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    if (!await UserOwnsCharacterAsync(id, userId.Value, db)) return Results.NotFound();
+
     var character = await db.Characters.FirstOrDefaultAsync(c => c.Id == id);
     if (character is null) return Results.NotFound($"Character {id} not found");
 
@@ -632,10 +714,15 @@ app.MapPost("/characters/{id}/select-avatar", async (Guid id, SelectAvatarReques
     await db.SaveChangesAsync();
     return Results.Ok(character);
 })
+.RequireAuthorization()
 .WithName("SelectCharacterAvatar");
 
-app.MapDelete("/characters/{id}/avatar-history/{historyId}", async (Guid id, Guid historyId, StoryFunTimeDbContext db) =>
+app.MapDelete("/characters/{id}/avatar-history/{historyId}", async (Guid id, Guid historyId, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    if (!await UserOwnsCharacterAsync(id, userId.Value, db)) return Results.NotFound();
+
     var history = await db.AvatarHistory.FirstOrDefaultAsync(h => h.Id == historyId && h.CharacterId == id);
     if (history is null) return Results.NotFound("Avatar history entry not found");
 
@@ -675,6 +762,7 @@ app.MapDelete("/characters/{id}/avatar-history/{historyId}", async (Guid id, Gui
     await db.SaveChangesAsync();
     return Results.NoContent();
 })
+.RequireAuthorization()
 .WithName("DeleteAvatarHistoryEntry");
 
 app.MapGet("/users/{userId}/stats", async (string userId, StoryFunTimeDbContext db, HttpContext ctx) =>
@@ -803,10 +891,14 @@ app.MapDelete("/story-templates/{id}", async (Guid id, StoryFunTimeDbContext db)
 })
 .WithName("DeleteStoryTemplate");
 
-app.MapPost("/books/{id}/apply-template/{templateId}", async (Guid id, Guid templateId, ApplyTemplateRequest request, StoryFunTimeDbContext db) =>
+app.MapPost("/books/{id}/apply-template/{templateId}", async (Guid id, Guid templateId, ApplyTemplateRequest request, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+
     var book = await db.Books.FirstOrDefaultAsync(b => b.Id == id);
     if (book is null) return Results.NotFound($"Book {id} not found");
+    if (book.UserId != userId.Value.ToString()) return Results.NotFound($"Book {id} not found");
 
     var template = await db.StoryTemplates.Include(t => t.Pages).FirstOrDefaultAsync(t => t.Id == templateId);
     if (template is null) return Results.NotFound($"Template {templateId} not found");
@@ -846,12 +938,17 @@ app.MapPost("/books/{id}/apply-template/{templateId}", async (Guid id, Guid temp
     await db.SaveChangesAsync();
     return Results.Ok(newPages);
 })
+.RequireAuthorization()
 .WithName("ApplyStoryTemplate");
 
-app.MapPost("/books/{id}/generate-video", async (Guid id, StoryFunTimeDbContext db, VideoService videoService) =>
+app.MapPost("/books/{id}/generate-video", async (Guid id, StoryFunTimeDbContext db, VideoService videoService, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+
     var book = await db.Books.FirstOrDefaultAsync(b => b.Id == id);
     if (book is null) return Results.NotFound($"Book {id} not found");
+    if (book.UserId != userId.Value.ToString()) return Results.NotFound($"Book {id} not found");
 
     var pages = await db.Pages.Where(p => p.BookId == id).OrderBy(p => p.PageNumber).ToListAsync();
     if (pages.Count == 0) return Results.BadRequest("This book has no pages yet.");
@@ -894,12 +991,17 @@ app.MapPost("/books/{id}/generate-video", async (Guid id, StoryFunTimeDbContext 
         return Results.Problem($"Video generation failed: {ex.Message}");
     }
 })
+.RequireAuthorization()
 .WithName("GenerateBookVideo");
 
-app.MapPost("/books/{id}/characters/copy", async (Guid id, CopyCharactersRequest request, StoryFunTimeDbContext db) =>
+app.MapPost("/books/{id}/characters/copy", async (Guid id, CopyCharactersRequest request, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+
     var book = await db.Books.FirstOrDefaultAsync(b => b.Id == id);
     if (book is null) return Results.NotFound($"Book {id} not found");
+    if (book.UserId != userId.Value.ToString()) return Results.NotFound($"Book {id} not found");
 
     var sourceCharacters = await db.Characters.Where(c => request.CharacterIds.Contains(c.Id)).ToListAsync();
     var newCharacters = new List<Character>();
@@ -922,6 +1024,7 @@ app.MapPost("/books/{id}/characters/copy", async (Guid id, CopyCharactersRequest
     await db.SaveChangesAsync();
     return Results.Ok(newCharacters);
 })
+.RequireAuthorization()
 .WithName("CopyCharactersToBook");
 
 async Task TrimAvatarHistoryAsync(Guid characterId, StoryFunTimeDbContext db, string uploadsDir)
@@ -980,6 +1083,24 @@ static class UserExtensions
         var sub = context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
                   ?? context.User.FindFirst("sub")?.Value;
         return Guid.TryParse(sub, out var id) ? id : null;
+    }
+}
+
+static class OwnershipHelpers
+{
+    public static async Task<bool> UserOwnsBookAsync(Guid bookId, Guid userId, StoryFunTimeDbContext db)
+        => await db.Books.AnyAsync(b => b.Id == bookId && b.UserId == userId.ToString());
+
+    public static async Task<bool> UserOwnsPageAsync(Guid pageId, Guid userId, StoryFunTimeDbContext db)
+    {
+        var page = await db.Pages.FirstOrDefaultAsync(p => p.Id == pageId);
+        return page is not null && await UserOwnsBookAsync(page.BookId, userId, db);
+    }
+
+    public static async Task<bool> UserOwnsCharacterAsync(Guid characterId, Guid userId, StoryFunTimeDbContext db)
+    {
+        var character = await db.Characters.FirstOrDefaultAsync(c => c.Id == characterId);
+        return character is not null && await UserOwnsBookAsync(character.BookId, userId, db);
     }
 }
 static class JwtHelper
