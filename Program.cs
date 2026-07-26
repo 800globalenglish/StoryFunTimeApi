@@ -1,8 +1,15 @@
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using StoryFunTimeApi.Data;
 using StoryFunTimeApi.Models;
 using StoryFunTimeApi.Services;
-using Microsoft.AspNetCore.Http;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -28,16 +35,77 @@ builder.Services.AddSingleton<TranscriptionService>();
 
 builder.Services.AddSingleton<PhotoFilterService>();
 
+builder.Services.AddSingleton<PasswordHasher<User>>();
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = builder.Configuration["Jwt:Issuer"],
+            ValidateAudience = true,
+            ValidAudience = builder.Configuration["Jwt:Audience"],
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(
+                Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? ""))
+        };
+    });
+builder.Services.AddAuthorization();
+
 var app = builder.Build();
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
 }
 app.UseCors("AllowFlutterApp");
+app.UseAuthentication();
+app.UseAuthorization();
 app.UseStaticFiles();
 app.UseHttpsRedirection();
 
 // --- Books ---
+
+// --- Auth ---
+
+app.MapPost("/auth/signup", async (SignupRequest request, StoryFunTimeDbContext db, PasswordHasher<User> hasher, IConfiguration config) =>
+{
+    var email = request.Email.Trim().ToLowerInvariant();
+
+    if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(request.Password))
+        return Results.BadRequest(new { error = "Email and password are required." });
+    if (request.Password.Length < 8)
+        return Results.BadRequest(new { error = "Password must be at least 8 characters." });
+
+    if (await db.Users.AnyAsync(u => u.Email == email))
+        return Results.Conflict(new { error = "An account with that email already exists." });
+
+    var user = new User { Id = Guid.NewGuid(), Email = email, CreatedAt = DateTime.UtcNow };
+    user.PasswordHash = hasher.HashPassword(user, request.Password);
+
+    db.Users.Add(user);
+    await db.SaveChangesAsync();
+
+    var token = JwtHelper.CreateToken(user, config);
+    return Results.Created($"/users/{user.Id}", new { token, userId = user.Id, email = user.Email });
+})
+.WithName("Signup");
+
+app.MapPost("/auth/login", async (LoginRequest request, StoryFunTimeDbContext db, PasswordHasher<User> hasher, IConfiguration config) =>
+{
+    var email = request.Email.Trim().ToLowerInvariant();
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Email == email);
+    if (user is null)
+        return Results.Json(new { error = "Invalid email or password." }, statusCode: 401);
+
+    if (hasher.VerifyHashedPassword(user, user.PasswordHash, request.Password) == PasswordVerificationResult.Failed)
+        return Results.Json(new { error = "Invalid email or password." }, statusCode: 401);
+
+    var token = JwtHelper.CreateToken(user, config);
+    return Results.Ok(new { token, userId = user.Id, email = user.Email });
+})
+.WithName("Login");
 
 app.MapPost("/books", async (CreateBookRequest request, StoryFunTimeDbContext db) =>
 {
@@ -885,3 +953,26 @@ record AddTemplatePageRequest(int PageNumber, string TemplateText);
 record UpdateTemplatePageRequest(string TemplateText);
 record ApplyTemplateRequest(Dictionary<string, Guid> RoleToCharacterId);
 
+static class JwtHelper
+{
+    public static string CreateToken(User user, IConfiguration config)
+    {
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(config["Jwt:Key"]!));
+        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+        var claims = new[]
+        {
+            new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
+            new Claim(JwtRegisteredClaimNames.Email, user.Email),
+        };
+        var token = new JwtSecurityToken(
+            issuer: config["Jwt:Issuer"],
+            audience: config["Jwt:Audience"],
+            claims: claims,
+            expires: DateTime.UtcNow.AddDays(double.Parse(config["Jwt:ExpiryDays"] ?? "30")),
+            signingCredentials: creds);
+        return new JwtSecurityTokenHandler().WriteToken(token);
+    }
+}
+
+record SignupRequest(string Email, string Password);
+record LoginRequest(string Email, string Password);

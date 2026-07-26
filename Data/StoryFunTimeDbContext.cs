@@ -15,4 +15,11 @@ public class StoryFunTimeDbContext : DbContext
     public DbSet<UserStats> UserStats { get; set; }
     public DbSet<StoryTemplate> StoryTemplates { get; set; }
     public DbSet<StoryTemplatePage> StoryTemplatePages { get; set; }
+    public DbSet<User> Users => Set<User>();
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<User>()
+            .HasIndex(u => u.Email)
+            .IsUnique();
+    }
 }
