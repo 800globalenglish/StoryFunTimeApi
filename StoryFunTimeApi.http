@@ -1,6 +1,27 @@
 @StoryFunTimeApi_HostAddress = http://localhost:5220
 
-GET {{StoryFunTimeApi_HostAddress}}/weatherforecast/
-Accept: application/json
+### Try without logging in - should fail with 401
+GET {{StoryFunTimeApi_HostAddress}}/books
 
-###
+### Log in to get a fresh token
+POST {{StoryFunTimeApi_HostAddress}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "you@example.com",
+  "password": "testpass123"
+}
+
+### Paste the token from the login response above into here, then run this
+GET {{StoryFunTimeApi_HostAddress}}/books
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJlMmQxZWY5Yi1mNmIyLTQxMjItYjVhMC1kOTYxZmY1MmMzNGYiLCJlbWFpbCI6InlvdUBleGFtcGxlLmNvbSIsImV4cCI6MTc4NzYzMTE0OSwiaXNzIjoiU3RvcnlGdW5UaW1lQXBpIiwiYXVkIjoiU3RvcnlGdW5UaW1lQXBwIn0.LlS0SljSe8DzjxkrfDoPukZBIMFaE0Usi-cZ6v0YAyk
+
+### Create a book while logged in
+POST {{StoryFunTimeApi_HostAddress}}/books
+Content-Type: application/json
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJlMmQxZWY5Yi1mNmIyLTQxMjItYjVhMC1kOTYxZmY1MmMzNGYiLCJlbWFpbCI6InlvdUBleGFtcGxlLmNvbSIsImV4cCI6MTc4NzYzMTE0OSwiaXNzIjoiU3RvcnlGdW5UaW1lQXBpIiwiYXVkIjoiU3RvcnlGdW5UaW1lQXBwIn0.LlS0SljSe8DzjxkrfDoPukZBIMFaE0Usi-cZ6v0YAyk
+
+{
+  "title": "Test Book",
+  "theme": "space adventure"
+}

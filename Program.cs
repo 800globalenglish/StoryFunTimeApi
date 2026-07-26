@@ -107,12 +107,15 @@ app.MapPost("/auth/login", async (LoginRequest request, StoryFunTimeDbContext db
 })
 .WithName("Login");
 
-app.MapPost("/books", async (CreateBookRequest request, StoryFunTimeDbContext db) =>
+app.MapPost("/books", async (CreateBookRequest request, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+
     var book = new Book
     {
         Id = Guid.NewGuid(),
-        UserId = request.UserId,
+        UserId = userId.ToString()!,
         Title = request.Title,
         Theme = request.Theme,
         Status = "draft",
@@ -125,6 +128,7 @@ app.MapPost("/books", async (CreateBookRequest request, StoryFunTimeDbContext db
 
     return Results.Created($"/books/{book.Id}", book);
 })
+.RequireAuthorization()
 .WithName("CreateBook");
 
 app.MapGet("/books/{id}", async (Guid id, StoryFunTimeDbContext db) =>
@@ -211,8 +215,11 @@ app.MapDelete("/books/{id}", async (Guid id, StoryFunTimeDbContext db) =>
 })
 .WithName("DeleteBook");
 
-app.MapGet("/books", async (string userId, StoryFunTimeDbContext db) =>
+app.MapGet("/books", async (StoryFunTimeDbContext db, HttpContext ctx) =>
 {
+    var userId = ctx.GetUserId()?.ToString();
+    if (userId is null) return Results.Unauthorized();
+
     var books = await db.Books
         .Where(b => b.UserId == userId && !b.IsLibrary)
         .Include(b => b.Characters)
@@ -221,6 +228,7 @@ app.MapGet("/books", async (string userId, StoryFunTimeDbContext db) =>
 
     return Results.Ok(books);
 })
+.RequireAuthorization()
 .WithName("GetBooksForUser");
 
 // --- Pages ---
@@ -669,22 +677,29 @@ app.MapDelete("/characters/{id}/avatar-history/{historyId}", async (Guid id, Gui
 })
 .WithName("DeleteAvatarHistoryEntry");
 
-app.MapGet("/users/{userId}/stats", async (string userId, StoryFunTimeDbContext db) =>
+app.MapGet("/users/{userId}/stats", async (string userId, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
-    var stats = await db.UserStats.FirstOrDefaultAsync(s => s.UserId == userId);
-    return Results.Ok(new { userId, totalCharactersCreated = stats?.TotalCharactersCreated ?? 0, totalCharactersDeleted = stats?.TotalCharactersDeleted ?? 0 });
+    var realUserId = ctx.GetUserId()?.ToString();
+    if (realUserId is null) return Results.Unauthorized();
+
+    var stats = await db.UserStats.FirstOrDefaultAsync(s => s.UserId == realUserId);
+    return Results.Ok(new { userId = realUserId, totalCharactersCreated = stats?.TotalCharactersCreated ?? 0, totalCharactersDeleted = stats?.TotalCharactersDeleted ?? 0 });
 })
+.RequireAuthorization()
 .WithName("GetUserStats");
 
-app.MapGet("/users/{userId}/library-book", async (string userId, StoryFunTimeDbContext db) =>
+app.MapGet("/users/{userId}/library-book", async (string userId, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
-    var libraryBook = await db.Books.FirstOrDefaultAsync(b => b.UserId == userId && b.IsLibrary);
+    var realUserId = ctx.GetUserId()?.ToString();
+    if (realUserId is null) return Results.Unauthorized();
+
+    var libraryBook = await db.Books.FirstOrDefaultAsync(b => b.UserId == realUserId && b.IsLibrary);
     if (libraryBook is null)
     {
         libraryBook = new Book
         {
             Id = Guid.NewGuid(),
-            UserId = userId,
+            UserId = realUserId,
             Title = "My Characters",
             Theme = "",
             Status = "library",
@@ -695,15 +710,20 @@ app.MapGet("/users/{userId}/library-book", async (string userId, StoryFunTimeDbC
     }
     return Results.Ok(new { bookId = libraryBook.Id });
 })
+.RequireAuthorization()
 .WithName("GetOrCreateLibraryBook");
 
-app.MapGet("/users/{userId}/characters", async (string userId, StoryFunTimeDbContext db) =>
+app.MapGet("/users/{userId}/characters", async (string userId, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
+    var realUserId = ctx.GetUserId()?.ToString();
+    if (realUserId is null) return Results.Unauthorized();
+
     var characters = await db.Characters
-        .Where(c => db.Books.Any(b => b.Id == c.BookId && b.UserId == userId))
+        .Where(c => db.Books.Any(b => b.Id == c.BookId && b.UserId == realUserId))
         .ToListAsync();
     return Results.Ok(characters);
 })
+.RequireAuthorization()
 .WithName("GetAllCharactersForUser");
 
 app.MapGet("/story-templates", async (StoryFunTimeDbContext db) =>
@@ -935,7 +955,7 @@ record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
     public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
 }
 
-record CreateBookRequest(string UserId, string Title, string Theme);
+record CreateBookRequest(string Title, string Theme);
 record CreatePageRequest(int PageNumber, string ScriptText, string? OriginalPhotoUrl, string? CartoonImageUrl, string? AudioUrl);
 record GenerateScriptRequest(int? PageCount, string? Title, string? Theme);
 
@@ -953,6 +973,15 @@ record AddTemplatePageRequest(int PageNumber, string TemplateText);
 record UpdateTemplatePageRequest(string TemplateText);
 record ApplyTemplateRequest(Dictionary<string, Guid> RoleToCharacterId);
 
+static class UserExtensions
+{
+    public static Guid? GetUserId(this HttpContext context)
+    {
+        var sub = context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                  ?? context.User.FindFirst("sub")?.Value;
+        return Guid.TryParse(sub, out var id) ? id : null;
+    }
+}
 static class JwtHelper
 {
     public static string CreateToken(User user, IConfiguration config)
