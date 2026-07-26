@@ -73,38 +73,57 @@ app.UseHttpsRedirection();
 app.MapPost("/auth/signup", async (SignupRequest request, StoryFunTimeDbContext db, PasswordHasher<User> hasher, IConfiguration config) =>
 {
     var email = request.Email.Trim().ToLowerInvariant();
+    var username = request.Username.Trim();
 
     if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(request.Password))
         return Results.BadRequest(new { error = "Email and password are required." });
+    if (string.IsNullOrWhiteSpace(username))
+        return Results.BadRequest(new { error = "Username is required." });
     if (request.Password.Length < 8)
         return Results.BadRequest(new { error = "Password must be at least 8 characters." });
 
     if (await db.Users.AnyAsync(u => u.Email == email))
         return Results.Conflict(new { error = "An account with that email already exists." });
+    if (await db.Users.AnyAsync(u => u.Username.ToLower() == username.ToLower()))
+        return Results.Conflict(new { error = "That username is already taken." });
 
-    var user = new User { Id = Guid.NewGuid(), Email = email, CreatedAt = DateTime.UtcNow };
+    Guid? referredByUserId = null;
+    if (!string.IsNullOrWhiteSpace(request.ReferredByUsername))
+    {
+        var referrer = await db.Users.FirstOrDefaultAsync(u => u.Username.ToLower() == request.ReferredByUsername!.Trim().ToLower());
+        if (referrer is not null) referredByUserId = referrer.Id;
+    }
+
+    var user = new User
+    {
+        Id = Guid.NewGuid(),
+        Email = email,
+        Username = username,
+        ReferredByUserId = referredByUserId,
+        CreatedAt = DateTime.UtcNow
+    };
     user.PasswordHash = hasher.HashPassword(user, request.Password);
 
     db.Users.Add(user);
     await db.SaveChangesAsync();
 
     var token = JwtHelper.CreateToken(user, config);
-    return Results.Created($"/users/{user.Id}", new { token, userId = user.Id, email = user.Email });
+    return Results.Created($"/users/{user.Id}", new { token, userId = user.Id, email = user.Email, username = user.Username });
 })
 .WithName("Signup");
 
 app.MapPost("/auth/login", async (LoginRequest request, StoryFunTimeDbContext db, PasswordHasher<User> hasher, IConfiguration config) =>
 {
-    var email = request.Email.Trim().ToLowerInvariant();
-    var user = await db.Users.FirstOrDefaultAsync(u => u.Email == email);
+    var identifier = request.EmailOrUsername.Trim().ToLowerInvariant();
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Email == identifier || u.Username.ToLower() == identifier);
     if (user is null)
-        return Results.Json(new { error = "Invalid email or password." }, statusCode: 401);
+        return Results.Json(new { error = "Invalid email/username or password." }, statusCode: 401);
 
     if (hasher.VerifyHashedPassword(user, user.PasswordHash, request.Password) == PasswordVerificationResult.Failed)
-        return Results.Json(new { error = "Invalid email or password." }, statusCode: 401);
+        return Results.Json(new { error = "Invalid email/username or password." }, statusCode: 401);
 
     var token = JwtHelper.CreateToken(user, config);
-    return Results.Ok(new { token, userId = user.Id, email = user.Email });
+    return Results.Ok(new { token, userId = user.Id, email = user.Email, username = user.Username });
 })
 .WithName("Login");
 
@@ -1113,6 +1132,7 @@ static class JwtHelper
         {
             new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
             new Claim(JwtRegisteredClaimNames.Email, user.Email),
+            new Claim("username", user.Username),
         };
         var token = new JwtSecurityToken(
             issuer: config["Jwt:Issuer"],
@@ -1124,5 +1144,5 @@ static class JwtHelper
     }
 }
 
-record SignupRequest(string Email, string Password);
-record LoginRequest(string Email, string Password);
+record SignupRequest(string Email, string Username, string Password, string? ReferredByUsername);
+record LoginRequest(string EmailOrUsername, string Password);
