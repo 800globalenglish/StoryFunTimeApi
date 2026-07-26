@@ -255,3 +255,44 @@ non-empty -> Book Summary. This required adding an actual API call before naviga
 5. Visual styling (the pink/purple gradient button look from the user's own
    flow mockups) - explicitly deferred; only flow/sequence was in scope this
    session, not visual polish.
+
+---
+
+## Session 4 — 2026-07-25 (cost research, UI polish, character screen redesign, deployment fixes)
+
+**Production paths confirmed this session:**
+- Backend site root: C:\inetpub\wwwroot\StoryFunTime\wwwroot\
+- Video output: C:\inetpub\wwwroot\StoryFunTime\wwwroot\uploads\videos\ (currently ~11MB across 7 files, ~1.6MB avg — no storage concerns yet)
+- Frontend /go app: C:\inetpub\wwwroot\StoryFunTimeWeb\go\
+- Frontend root (coming-soon/logo page): C:\inetpub\wwwroot\StoryFunTimeWeb\index.html
+- Note: the server's E: drive is small (5GB, ~1GB free) and already in active use by other, unrelated live sites (Content-L, members-live/dev, templates-dev, etc.) — do NOT use it for StoryFunTime storage. C: has ~30GB free and is fine for now.
+
+**Cost research:**
+- Compared Grok-direct (xAI) vs. Grok-via-Replicate: Replicate marks up ~2.4x over xAI direct pricing — keep using xAI directly for text, don't route through Replicate.
+- Nano-banana (Gemini image model) via Replicate vs. direct Google API: direct is likely cheaper, but not yet implemented — would require rewriting ReplicateService.cs's image calls to Google's Gemini API/SDK. Future "worth doing, not urgent" item.
+- Rough per-book cost estimate (2 characters, 5 scenes): ~$0.28–0.29, with images being ~98% of that. Voice transcription, video generation, and sharing are effectively free.
+
+**Frontend changes (story_fun_time):**
+- Added StoryFunTime_MainLogo.png as a bundled Flutter asset (assets/images/), shown on Home screen (home_screen.dart, 280px) above the buttons. Not yet added to a login/join screen — no such screen was ever found/confirmed to exist (see Open Items).
+- coming-soon.html (backend repo, deployed as StoryFunTimeWeb/index.html) simplified to show only the logo, no text.
+- Creator Wizard (creator_wizard_screen.dart): added numbered instructional steps (1. Edit/Regenerate Text, 2. Generate All Screens, 3. Record Sounds) with a "Hide instructions" link, persisted via shared_preferences. A "?" icon in the app bar reappears once hidden, to bring instructions back.
+- Creator Wizard: fixed a bug where the "Generate Video" / "Watch / Download" buttons were swapped.
+- Add Character screen (add_character_screen.dart): full redesign —
+  - Human/Pet toggle (SegmentedButton)
+  - Gender: 2 tappable circular images (male.png/female.png) instead of a dropdown
+  - Age: replaced separate Role + Age dropdowns with one 7-stage visual picker (age_01–age_07: Baby, Child, Teenager, Young Adult, Adult, Senior, Elder), auto-deriving both ageRange (new continuous brackets: 0-2, 3-9, 10-18, 19-39, 40-65, 66-80, 81+) and a generic role string
+  - Pet mode hides the age picker (sends ageRange: 'N/A') — not yet confirmed the backend/Grok prompt handles this gracefully
+- Book Details screen: character avatars resized from small 56px circles to 120x120 rounded-rect cards matching Characters Home grid style.
+- Fixed Flutter-web double-tap bug on the Record Voice mic button (GestureDetector → Material+InkWell). Reported fixed but not yet confirmed on a real iPhone.
+- Removed debug banner. pubspec.yaml assets registration switched to wildcard folder.
+
+**Backend/production:**
+- Cleared production data: AvatarHistory, Pages, UserStats, Characters, Books (FK-safe order) — kept StoryTemplates/StoryTemplatePages and schema. Manual backup taken first.
+- Uninstalled Acronis ("Acronis Drivers" ransomware-protection component) from local dev machine after repeated false-positive flags on dartvm.exe during builds.
+- Cleaned up dev-artifact folders (bin/obj/.vs/etc.) on the server to free disk space.
+
+**New/updated open issues:**
+- No real login/signup screen exists yet — auth still hardcoded to test-user-1. This is the next planned task.
+- mp4 downloads just open in a browser tab; no guaranteed "Save" prompt. Planned fix: backend download endpoint with Content-Disposition: attachment header — not yet implemented.
+- Nano-banana still via Replicate, not Google direct — cost-saving opportunity, not urgent.
+- Logo not yet on a login/signup screen (ties into the auth task above).
