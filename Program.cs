@@ -110,8 +110,8 @@ app.MapPost("/auth/signup", async (SignupRequest request, StoryFunTimeDbContext 
         return Results.BadRequest(new { error = "Email and password are required." });
     if (string.IsNullOrWhiteSpace(username))
         return Results.BadRequest(new { error = "Username is required." });
-    if (request.Password.Length < 8)
-        return Results.BadRequest(new { error = "Password must be at least 8 characters." });
+    if (request.Password.Length < 6)
+        return Results.BadRequest(new { error = "Password must be at least 6 characters." });
 
     if (await db.Users.AnyAsync(u => u.Email == email))
         return Results.Conflict(new { error = "An account with that email already exists." });
@@ -192,6 +192,54 @@ app.MapPost("/auth/login", async (LoginRequest request, StoryFunTimeDbContext db
     });
 })
 .WithName("Login");
+
+app.MapPost("/auth/forgot-password", async (ForgotPasswordRequest request, StoryFunTimeDbContext db, EmailService emailService) =>
+{
+    var identifier = request.EmailOrUsername.Trim().ToLowerInvariant();
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Email == identifier || u.Username.ToLower() == identifier);
+
+    // Always return the same response whether or not an account was found,
+    // so this endpoint can't be used to check which emails/usernames exist.
+    if (user is not null)
+    {
+        user.PasswordResetToken = Guid.NewGuid().ToString("N");
+        user.PasswordResetTokenExpiresAt = DateTime.UtcNow.AddHours(1);
+        await db.SaveChangesAsync();
+
+        try
+        {
+            await emailService.SendPasswordResetEmailAsync(user.Email, user.Username, user.PasswordResetToken);
+        }
+        catch
+        {
+            // Best-effort - don't reveal email delivery failures to the caller.
+        }
+    }
+
+    return Results.Ok(new { message = "If an account exists, a password reset email has been sent." });
+})
+.WithName("ForgotPassword");
+
+app.MapPost("/auth/reset-password", async (ResetPasswordRequest request, StoryFunTimeDbContext db, PasswordHasher<User> hasher) =>
+{
+    if (string.IsNullOrWhiteSpace(request.NewPassword) || request.NewPassword.Length < 6)
+        return Results.BadRequest(new { error = "Password must be at least 6 characters." });
+
+    var user = await db.Users.FirstOrDefaultAsync(u => u.PasswordResetToken == request.Token);
+    if (user is null)
+        return Results.BadRequest(new { error = "This reset link is invalid. Please request a new one." });
+
+    if (user.PasswordResetTokenExpiresAt < DateTime.UtcNow)
+        return Results.BadRequest(new { error = "This reset link has expired. Please request a new one." });
+
+    user.PasswordHash = hasher.HashPassword(user, request.NewPassword);
+    user.PasswordResetToken = null;
+    user.PasswordResetTokenExpiresAt = null;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new { message = "Password updated successfully." });
+})
+.WithName("ResetPassword");
 
 app.MapGet("/auth/verify-email", async (string token, StoryFunTimeDbContext db) =>
 {
@@ -1339,3 +1387,5 @@ static class JwtHelper
 
 record SignupRequest(string Email, string Username, string Password, string? ReferredByUsername);
 record LoginRequest(string EmailOrUsername, string Password);
+record ForgotPasswordRequest(string EmailOrUsername);
+record ResetPasswordRequest(string Token, string NewPassword);

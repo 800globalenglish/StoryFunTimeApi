@@ -11,5 +11,7 @@ public class User
     public DateTime? EmailVerificationTokenExpiresAt { get; set; }
     public Guid? ReferredByUserId { get; set; }
     public int BonusCredits { get; set; } = 0;
+    public string? PasswordResetToken { get; set; }
+    public DateTime? PasswordResetTokenExpiresAt { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
