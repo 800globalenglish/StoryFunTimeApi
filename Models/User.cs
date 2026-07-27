@@ -10,5 +10,6 @@ public class User
     public string? EmailVerificationToken { get; set; }
     public DateTime? EmailVerificationTokenExpiresAt { get; set; }
     public Guid? ReferredByUserId { get; set; }
+    public int BonusCredits { get; set; } = 0;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }

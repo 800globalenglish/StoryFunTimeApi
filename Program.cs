@@ -119,9 +119,10 @@ app.MapPost("/auth/signup", async (SignupRequest request, StoryFunTimeDbContext 
         return Results.Conflict(new { error = "That username is already taken." });
 
     Guid? referredByUserId = null;
+    User? referrer = null;
     if (!string.IsNullOrWhiteSpace(request.ReferredByUsername))
     {
-        var referrer = await db.Users.FirstOrDefaultAsync(u => u.Username.ToLower() == request.ReferredByUsername!.Trim().ToLower());
+        referrer = await db.Users.FirstOrDefaultAsync(u => u.Username.ToLower() == request.ReferredByUsername!.Trim().ToLower());
         if (referrer is not null) referredByUserId = referrer.Id;
     }
 
@@ -138,6 +139,12 @@ app.MapPost("/auth/signup", async (SignupRequest request, StoryFunTimeDbContext 
     user.PasswordHash = hasher.HashPassword(user, request.Password);
 
     db.Users.Add(user);
+
+    if (referrer is not null)
+    {
+        referrer.BonusCredits += 1;
+    }
+
     await db.SaveChangesAsync();
 
     // Best-effort: don't fail signup if the verification email can't be sent.
@@ -249,11 +256,35 @@ app.MapGet("/auth/me", async (StoryFunTimeDbContext db, HttpContext ctx) =>
         email = user.Email,
         username = user.Username,
         emailVerified = user.EmailVerified,
-        createdAt = user.CreatedAt
+        createdAt = user.CreatedAt,
+        bonusCredits = user.BonusCredits
     });
 })
 .RequireAuthorization()
 .WithName("GetCurrentUser");
+
+app.MapGet("/users/me/referrals", async (StoryFunTimeDbContext db, HttpContext ctx) =>
+{
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+
+    var user = await db.Users.FirstOrDefaultAsync(u => u.Id == userId);
+    if (user is null) return Results.NotFound();
+
+    var referrals = await db.Users
+        .Where(u => u.ReferredByUserId == userId)
+        .OrderByDescending(u => u.CreatedAt)
+        .Select(u => new { username = u.Username, joinedAt = u.CreatedAt })
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        bonusCredits = user.BonusCredits,
+        referrals
+    });
+})
+.RequireAuthorization()
+.WithName("GetMyReferrals");
 
 app.MapPost("/books", async (CreateBookRequest request, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
