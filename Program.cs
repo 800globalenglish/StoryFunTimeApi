@@ -29,7 +29,6 @@ builder.Services.AddCors(options =>
 });
 
 builder.Services.AddHttpClient<GrokService>();
-builder.Services.AddHttpClient<EmailService>();
 
 builder.Services.AddHttpClient<ReplicateService>();
 builder.Services.AddSingleton<VideoService>();
@@ -71,7 +70,7 @@ app.UseHttpsRedirection();
 
 // --- Auth ---
 
-app.MapPost("/auth/signup", async (SignupRequest request, StoryFunTimeDbContext db, PasswordHasher<User> hasher, IConfiguration config, EmailService emailService) =>
+app.MapPost("/auth/signup", async (SignupRequest request, StoryFunTimeDbContext db, PasswordHasher<User> hasher, IConfiguration config) =>
 {
     var email = request.Email.Trim().ToLowerInvariant();
     var username = request.Username.Trim();
@@ -101,35 +100,15 @@ app.MapPost("/auth/signup", async (SignupRequest request, StoryFunTimeDbContext 
         Email = email,
         Username = username,
         ReferredByUserId = referredByUserId,
-        CreatedAt = DateTime.UtcNow,
-        EmailVerificationToken = Guid.NewGuid().ToString("N"),
-        EmailVerificationTokenExpiresAt = DateTime.UtcNow.AddDays(3)
+        CreatedAt = DateTime.UtcNow
     };
     user.PasswordHash = hasher.HashPassword(user, request.Password);
 
     db.Users.Add(user);
     await db.SaveChangesAsync();
 
-    // Best-effort: don't fail signup if the verification email can't be sent.
-    try
-    {
-        await emailService.SendVerificationEmailAsync(user.Email, user.Username, user.EmailVerificationToken!);
-    }
-    catch
-    {
-        // Swallow - the person can request a resend later from inside the app.
-    }
-
     var token = JwtHelper.CreateToken(user, config);
-    return Results.Created($"/users/{user.Id}", new
-    {
-        token,
-        userId = user.Id,
-        email = user.Email,
-        username = user.Username,
-        emailVerified = user.EmailVerified,
-        createdAt = user.CreatedAt
-    });
+    return Results.Created($"/users/{user.Id}", new { token, userId = user.Id, email = user.Email, username = user.Username });
 })
 .WithName("Signup");
 
@@ -144,86 +123,9 @@ app.MapPost("/auth/login", async (LoginRequest request, StoryFunTimeDbContext db
         return Results.Json(new { error = "Invalid email/username or password." }, statusCode: 401);
 
     var token = JwtHelper.CreateToken(user, config);
-    return Results.Ok(new
-    {
-        token,
-        userId = user.Id,
-        email = user.Email,
-        username = user.Username,
-        emailVerified = user.EmailVerified,
-        createdAt = user.CreatedAt
-    });
+    return Results.Ok(new { token, userId = user.Id, email = user.Email, username = user.Username });
 })
 .WithName("Login");
-
-app.MapGet("/auth/verify-email", async (string token, StoryFunTimeDbContext db) =>
-{
-    var user = await db.Users.FirstOrDefaultAsync(u => u.EmailVerificationToken == token);
-    var html = (string title, string message) => Results.Content(
-        $"<html><body style='font-family:sans-serif;text-align:center;padding:60px;'><h2>{title}</h2><p>{message}</p></body></html>",
-        "text/html");
-
-    if (user is null)
-        return html("Link not valid", "This verification link is invalid. You can request a new one from inside the app.");
-
-    if (user.EmailVerificationTokenExpiresAt < DateTime.UtcNow)
-        return html("Link expired", "This verification link has expired. You can request a new one from inside the app.");
-
-    user.EmailVerified = true;
-    user.EmailVerificationToken = null;
-    user.EmailVerificationTokenExpiresAt = null;
-    await db.SaveChangesAsync();
-
-    return html("Email verified!", "Thanks - your email is confirmed. You can close this tab and go back to the app.");
-})
-.WithName("VerifyEmail");
-
-app.MapPost("/auth/resend-verification", async (StoryFunTimeDbContext db, EmailService emailService, HttpContext ctx) =>
-{
-    var userId = ctx.GetUserId();
-    if (userId is null) return Results.Unauthorized();
-
-    var user = await db.Users.FirstOrDefaultAsync(u => u.Id == userId);
-    if (user is null) return Results.NotFound();
-    if (user.EmailVerified) return Results.Ok(new { message = "Email already verified." });
-
-    user.EmailVerificationToken = Guid.NewGuid().ToString("N");
-    user.EmailVerificationTokenExpiresAt = DateTime.UtcNow.AddDays(3);
-    await db.SaveChangesAsync();
-
-    try
-    {
-        await emailService.SendVerificationEmailAsync(user.Email, user.Username, user.EmailVerificationToken!);
-    }
-    catch (Exception ex)
-    {
-        return Results.Json(new { error = $"Couldn't send email: {ex.Message}" }, statusCode: 500);
-    }
-
-    return Results.Ok(new { message = "Verification email sent." });
-})
-.RequireAuthorization()
-.WithName("ResendVerification");
-
-app.MapGet("/auth/me", async (StoryFunTimeDbContext db, HttpContext ctx) =>
-{
-    var userId = ctx.GetUserId();
-    if (userId is null) return Results.Unauthorized();
-
-    var user = await db.Users.FirstOrDefaultAsync(u => u.Id == userId);
-    if (user is null) return Results.NotFound();
-
-    return Results.Ok(new
-    {
-        userId = user.Id,
-        email = user.Email,
-        username = user.Username,
-        emailVerified = user.EmailVerified,
-        createdAt = user.CreatedAt
-    });
-})
-.RequireAuthorization()
-.WithName("GetCurrentUser");
 
 app.MapPost("/books", async (CreateBookRequest request, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
@@ -264,25 +166,6 @@ app.MapGet("/books/{id}", async (Guid id, StoryFunTimeDbContext db, HttpContext 
 })
 .RequireAuthorization()
 .WithName("GetBook");
-
-app.MapPut("/books/{id}", async (Guid id, UpdateBookRequest request, StoryFunTimeDbContext db, HttpContext ctx) =>
-{
-    var userId = ctx.GetUserId();
-    if (userId is null) return Results.Unauthorized();
-    if (!await UserOwnsBookAsync(id, userId.Value, db)) return Results.NotFound();
-
-    var book = await db.Books.FirstOrDefaultAsync(b => b.Id == id);
-    if (book is null) return Results.NotFound();
-
-    book.Title = request.Title;
-    book.Theme = request.Theme;
-    book.UpdatedAt = DateTime.UtcNow;
-    await db.SaveChangesAsync();
-
-    return Results.Ok(book);
-})
-.RequireAuthorization()
-.WithName("UpdateBook");
 
 app.MapPut("/pages/{id}", async (Guid id, UpdatePageTextRequest request, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
@@ -1130,6 +1013,22 @@ app.MapPost("/books/{id}/generate-video", async (Guid id, StoryFunTimeDbContext 
 .RequireAuthorization()
 .WithName("GenerateBookVideo");
 
+app.MapGet("/books/{id}/video/download", async (Guid id, StoryFunTimeDbContext db) =>
+{
+    var book = await db.Books.FirstOrDefaultAsync(b => b.Id == id);
+    if (book is null || book.VideoUrl is null) return Results.NotFound();
+
+    var wwwroot = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot");
+    var filePath = Path.Combine(wwwroot, book.VideoUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+    if (!File.Exists(filePath)) return Results.NotFound();
+
+    var safeTitle = string.Concat(book.Title.Split(Path.GetInvalidFileNameChars()));
+    var downloadName = string.IsNullOrWhiteSpace(safeTitle) ? $"{id}.mp4" : $"{safeTitle}.mp4";
+
+    return Results.File(filePath, "video/mp4", fileDownloadName: downloadName);
+})
+.WithName("DownloadBookVideo");
+
 app.MapPost("/books/{id}/characters/copy", async (Guid id, CopyCharactersRequest request, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
     var userId = ctx.GetUserId();
@@ -1195,7 +1094,6 @@ record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
 }
 
 record CreateBookRequest(string Title, string Theme);
-record UpdateBookRequest(string Title, string Theme);
 record CreatePageRequest(int PageNumber, string ScriptText, string? OriginalPhotoUrl, string? CartoonImageUrl, string? AudioUrl);
 record GenerateScriptRequest(int? PageCount, string? Title, string? Theme);
 
