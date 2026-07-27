@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.FileProviders;
 using Microsoft.IdentityModel.Tokens;
 using StoryFunTimeApi.Data;
 using StoryFunTimeApi.Models;
@@ -65,6 +66,35 @@ app.UseCors("AllowFlutterApp");
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseStaticFiles();
+
+// --- Uploaded file storage ---
+// Everything the app writes for users - character photos, generated avatars,
+// scenes, audio, videos - lives under one configurable root. Locally (or if
+// unset) this defaults to wwwroot/uploads exactly like before. On the server,
+// set "Storage:UploadsRootPath" in appsettings.json to a folder on a drive
+// with real space (e.g. E:\StoryFunTimeUploads) so uploads stop filling up C:.
+var uploadsRootConfig = app.Configuration["Storage:UploadsRootPath"];
+var uploadsBasePath = string.IsNullOrWhiteSpace(uploadsRootConfig)
+    ? Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads")
+    : uploadsRootConfig;
+Directory.CreateDirectory(uploadsBasePath);
+
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(uploadsBasePath),
+    RequestPath = "/uploads"
+});
+
+// Turns a stored URL like "/uploads/characters/xxx.png" into the real
+// physical file path under uploadsBasePath, regardless of where that is.
+string ResolveUploadPath(string url)
+{
+    var relative = url.TrimStart('/');
+    if (relative.StartsWith("uploads/", StringComparison.OrdinalIgnoreCase))
+        relative = relative["uploads/".Length..];
+    return Path.Combine(uploadsBasePath, relative.Replace('/', Path.DirectorySeparatorChar));
+}
+
 app.UseHttpsRedirection();
 
 // --- Books ---
@@ -455,7 +485,7 @@ app.MapPost("/books/{id}/characters", async (Guid id, HttpRequest request, Story
         Gender = gender,
         AgeRange = ageRange
     };
-    var uploadsDir = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "characters");
+    var uploadsDir = Path.Combine(uploadsBasePath, "characters");
     Directory.CreateDirectory(uploadsDir);
     var originalFileName = $"{character.Id}_original.jpg";
     var originalPath = Path.Combine(uploadsDir, originalFileName);
@@ -548,14 +578,14 @@ app.MapPost("/characters/{id}/regenerate-avatar", async (Guid id, RegenerateAvat
     if (character.OriginalPhotoUrl is null) return Results.BadRequest("No original photo to regenerate from");
     try
     {
-        var originalPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", character.OriginalPhotoUrl.TrimStart('/'));
+        var originalPath = ResolveUploadPath(character.OriginalPhotoUrl);
         var imageBytes = await File.ReadAllBytesAsync(originalPath);
         var cartoonUrl = await replicate.GenerateAvatarWithNanoBanana(imageBytes, "image/jpeg", character.Gender, character.Role, character.AgeRange, request?.ExtraInstructions);
 
         using var httpClient = new HttpClient();
         var cartoonBytes = await httpClient.GetByteArrayAsync(cartoonUrl);
 
-        var uploadsDir = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "characters");
+        var uploadsDir = Path.Combine(uploadsBasePath, "characters");
         var cartoonFileName = $"{character.Id}_{Guid.NewGuid()}.jpg";
         var cartoonPath = Path.Combine(uploadsDir, cartoonFileName);
         await File.WriteAllBytesAsync(cartoonPath, cartoonBytes);
@@ -618,7 +648,7 @@ app.MapPost("/pages/{id}/photo", async (Guid id, HttpRequest request, StoryFunTi
     var file = form.Files.GetFile("photo");
     if (file is null || file.Length == 0) return Results.BadRequest("No photo file provided");
 
-    var uploadsDir = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "photos");
+    var uploadsDir = Path.Combine(uploadsBasePath, "photos");
     Directory.CreateDirectory(uploadsDir);
 
     // Save the original
@@ -674,7 +704,7 @@ app.MapPost("/pages/{id}/audio", async (Guid id, HttpRequest request, StoryFunTi
     var file = form.Files.GetFile("audio");
     if (file is null || file.Length == 0) return Results.BadRequest("No audio file provided");
 
-    var uploadsDir = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "audio");
+    var uploadsDir = Path.Combine(uploadsBasePath, "audio");
     Directory.CreateDirectory(uploadsDir);
 
     var fileName = $"{id}.webm";
@@ -730,7 +760,7 @@ app.MapPost("/pages/{id}/generate-scene", async (Guid id, GenerateSceneRequest? 
         var avatarImages = new List<(byte[] Bytes, string ContentType, string Name, string Gender)>();
         foreach (var character in avatarsWithPhotos)
         {
-            var avatarPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", character.CartoonAvatarUrl!.TrimStart('/'));
+            var avatarPath = ResolveUploadPath(character.CartoonAvatarUrl!);
             var bytes = await File.ReadAllBytesAsync(avatarPath);
             avatarImages.Add((bytes, "image/jpeg", character.Name, character.Gender));
         }
@@ -740,7 +770,7 @@ app.MapPost("/pages/{id}/generate-scene", async (Guid id, GenerateSceneRequest? 
         using var httpClient = new HttpClient();
         var sceneBytes = await httpClient.GetByteArrayAsync(sceneUrl);
 
-        var uploadsDir = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "scenes");
+        var uploadsDir = Path.Combine(uploadsBasePath, "scenes");
         Directory.CreateDirectory(uploadsDir);
 
         var currentPath = Path.Combine(uploadsDir, $"{id}_scene.jpg");
@@ -868,7 +898,7 @@ app.MapDelete("/characters/{id}/avatar-history/{historyId}", async (Guid id, Gui
         return Results.BadRequest("Can't delete the currently selected avatar. Choose a different one first.");
     }
 
-    var uploadsDir = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "characters");
+    var uploadsDir = Path.Combine(uploadsBasePath, "characters");
     var fileName = Path.GetFileName(history.Url);
     var filePath = Path.Combine(uploadsDir, fileName);
     if (File.Exists(filePath))
@@ -1089,7 +1119,6 @@ app.MapPost("/books/{id}/generate-video", async (Guid id, StoryFunTimeDbContext 
     var pages = await db.Pages.Where(p => p.BookId == id).OrderBy(p => p.PageNumber).ToListAsync();
     if (pages.Count == 0) return Results.BadRequest("This book has no pages yet.");
 
-    var wwwroot = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot");
     var missing = new List<string>();
     var pageInputs = new List<(int PageNumber, string ImagePath, string AudioPath)>();
 
@@ -1102,8 +1131,8 @@ app.MapPost("/books/{id}/generate-video", async (Guid id, StoryFunTimeDbContext 
         }
         pageInputs.Add((
             page.PageNumber,
-            Path.Combine(wwwroot, page.CartoonImageUrl.TrimStart('/')),
-            Path.Combine(wwwroot, page.AudioUrl.TrimStart('/'))
+            ResolveUploadPath(page.CartoonImageUrl),
+            ResolveUploadPath(page.AudioUrl)
         ));
     }
 
@@ -1114,7 +1143,7 @@ app.MapPost("/books/{id}/generate-video", async (Guid id, StoryFunTimeDbContext 
 
     try
     {
-        var outputDir = Path.Combine(wwwroot, "uploads", "videos");
+        var outputDir = Path.Combine(uploadsBasePath, "videos");
         var finalPath = await videoService.GenerateBookVideo(pageInputs, outputDir, id.ToString());
 
         book.VideoUrl = $"/uploads/videos/{id}.mp4";
@@ -1135,8 +1164,7 @@ app.MapGet("/books/{id}/video/download", async (Guid id, StoryFunTimeDbContext d
     var book = await db.Books.FirstOrDefaultAsync(b => b.Id == id);
     if (book is null || book.VideoUrl is null) return Results.NotFound();
 
-    var wwwroot = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot");
-    var filePath = Path.Combine(wwwroot, book.VideoUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+    var filePath = ResolveUploadPath(book.VideoUrl);
     if (!File.Exists(filePath)) return Results.NotFound();
 
     var safeTitle = string.Concat(book.Title.Split(Path.GetInvalidFileNameChars()));
