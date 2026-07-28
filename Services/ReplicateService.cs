@@ -219,7 +219,7 @@ public class ReplicateService
 
     // Public entry point: tries scene generation up to 3 times before giving up, same reasoning
     // as the avatar retry logic above.
-    public async Task<string> GenerateSceneWithCharacters(List<(byte[] Bytes, string ContentType, string Name, string Gender)> characterAvatars, string sceneDescription, string? extraInstructions = null)
+    public async Task<string> GenerateSceneWithCharacters(List<(byte[] Bytes, string ContentType, string Name, string Gender)> characterAvatars, string sceneDescription, string? theme = null, string? extraInstructions = null)
     {
         const int maxRetries = 3;
         Exception? lastError = null;
@@ -228,7 +228,7 @@ public class ReplicateService
         {
             try
             {
-                return await GenerateSceneWithCharactersAttempt(characterAvatars, sceneDescription, extraInstructions);
+                return await GenerateSceneWithCharactersAttempt(characterAvatars, sceneDescription, theme, extraInstructions);
             }
             catch (Exception ex)
             {
@@ -243,7 +243,7 @@ public class ReplicateService
         throw new Exception($"Scene generation failed after {maxRetries} attempts: {lastError?.Message}");
     }
 
-    private async Task<string> GenerateSceneWithCharactersAttempt(List<(byte[] Bytes, string ContentType, string Name, string Gender)> characterAvatars, string sceneDescription, string? extraInstructions = null)
+    private async Task<string> GenerateSceneWithCharactersAttempt(List<(byte[] Bytes, string ContentType, string Name, string Gender)> characterAvatars, string sceneDescription, string? theme = null, string? extraInstructions = null)
     {
         var imageInputs = characterAvatars
             .Select(c => $"data:{c.ContentType};base64,{Convert.ToBase64String(c.Bytes)}")
@@ -254,7 +254,17 @@ public class ReplicateService
 
         var extraNote = !string.IsNullOrWhiteSpace(extraInstructions) ? $" {extraInstructions}." : "";
 
-        var prompt = $"Using the exact people shown in the reference images, illustrate this children's storybook scene: {sceneDescription}. {characterNotes} Do not invent different-looking people - use the exact faces and identities from the reference images. Keep each character's face clearly visible and mostly facing toward the viewer - avoid extreme angles, faces looking sharply down, or faces partially hidden/obscured. Each character must look like the exact same person as their reference avatar image - match their face precisely, not just their general age and gender. Warm, colorful children's book illustration style.{extraNote}";
+        // Stated twice deliberately - once up front and once as a closing reminder - since a
+        // single mention tends to get lost among all the other instructions and the model
+        // drifts back to just illustrating the literal scene text instead of the book's theme.
+        var themeIntro = !string.IsNullOrWhiteSpace(theme)
+            ? $" This entire storybook is themed around \"{theme}\" - every scene, regardless of what the story text describes, must be set within and visually built around this theme (its settings, props, costumes, and world), not just plain everyday surroundings."
+            : "";
+        var themeReminder = !string.IsNullOrWhiteSpace(theme)
+            ? $" Reminder: this illustration must strongly and unmistakably reflect the \"{theme}\" theme - this is a strict requirement for every single page of this book, not an optional detail."
+            : "";
+
+        var prompt = $"Using the exact people shown in the reference images, illustrate this children's storybook scene: {sceneDescription}.{themeIntro} {characterNotes} Do not invent different-looking people - use the exact faces and identities from the reference images. Keep each character's face clearly visible and mostly facing toward the viewer - avoid extreme angles, faces looking sharply down, or faces partially hidden/obscured. Each character must look like the exact same person as their reference avatar image - match their face precisely, not just their general age and gender. Warm, colorful children's book illustration style.{themeReminder}{extraNote}";
 
         var requestBody = new
         {

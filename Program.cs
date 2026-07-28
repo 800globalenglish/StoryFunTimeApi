@@ -826,6 +826,8 @@ app.MapPost("/pages/{id}/generate-scene", async (Guid id, GenerateSceneRequest? 
     var page = await db.Pages.FirstOrDefaultAsync(p => p.Id == id);
     if (page is null) return Results.NotFound($"Page {id} not found");
 
+    var book = await db.Books.FirstOrDefaultAsync(b => b.Id == page.BookId);
+
     var characters = await db.Characters.Where(c => c.BookId == page.BookId).ToListAsync();
     var avatarsWithPhotos = characters.Where(c => c.CartoonAvatarUrl != null).ToList();
 
@@ -844,7 +846,7 @@ app.MapPost("/pages/{id}/generate-scene", async (Guid id, GenerateSceneRequest? 
             avatarImages.Add((bytes, "image/jpeg", character.Name, character.Gender));
         }
 
-        var sceneUrl = await replicate.GenerateSceneWithCharacters(avatarImages, page.ScriptText, request?.ExtraInstructions);
+        var sceneUrl = await replicate.GenerateSceneWithCharacters(avatarImages, page.ScriptText, book?.Theme, request?.ExtraInstructions);
 
         using var httpClient = new HttpClient();
         var sceneBytes = await httpClient.GetByteArrayAsync(sceneUrl);
