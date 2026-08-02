@@ -1188,6 +1188,109 @@ app.MapPost("/books/{id}/apply-template/{templateId}", async (Guid id, Guid temp
 .RequireAuthorization()
 .WithName("ApplyStoryTemplate");
 
+app.MapPost("/books/{id}/generate-from-recording", async (Guid id, HttpRequest request, StoryFunTimeDbContext db, TranscriptionService transcriptionService, HttpContext ctx) =>
+{
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+
+    var book = await db.Books.FirstOrDefaultAsync(b => b.Id == id);
+    if (book is null) return Results.NotFound($"Book {id} not found");
+    if (book.UserId != userId.Value.ToString()) return Results.NotFound($"Book {id} not found");
+
+    if (!request.HasFormContentType) return Results.BadRequest("Expected form data");
+    var form = await request.ReadFormAsync();
+    var file = form.Files.GetFile("audio");
+    if (file is null || file.Length == 0) return Results.BadRequest("No audio file provided");
+
+    // Save the whole-story recording to a temp location - it only needs to exist
+    // long enough to transcribe and cut apart, unlike per-page audio which is kept.
+    var tempDir = "temp_recordings";
+    Directory.CreateDirectory(tempDir);
+    var tempFilePath = Path.Combine(tempDir, $"{Guid.NewGuid()}.webm");
+    using (var stream = new FileStream(tempFilePath, FileMode.Create))
+    {
+        await file.CopyToAsync(stream);
+    }
+
+    List<TranscriptSegment> segments;
+    try
+    {
+        segments = await transcriptionService.TranscribeWithTimestamps(tempFilePath);
+    }
+    catch (Exception transcribeEx)
+    {
+        Console.WriteLine($"[GenerateFromRecording] Transcription FAILED: {transcribeEx.Message}");
+        File.Delete(tempFilePath);
+        return Results.BadRequest("Could not transcribe the recording. Please try again.");
+    }
+
+    if (segments.Count == 0)
+    {
+        File.Delete(tempFilePath);
+        return Results.BadRequest("No speech detected in the recording.");
+    }
+
+    // NEW - decode once to a reliably seekable WAV before cutting any pages
+    string wavPath;
+    try
+    {
+        wavPath = await transcriptionService.DecodeToWav(tempFilePath);
+    }
+    catch (Exception decodeEx)
+    {
+        Console.WriteLine($"[GenerateFromRecording] WAV decode FAILED: {decodeEx.Message}");
+        File.Delete(tempFilePath);
+        return Results.BadRequest("Could not process the recording. Please try again.");
+    }
+
+    var pageGroups = transcriptionService.GroupIntoPages(segments);
+
+    // A book represents one story at a time - clear any existing pages, same as apply-template
+    var existingPages = await db.Pages.Where(p => p.BookId == id).ToListAsync();
+    db.Pages.RemoveRange(existingPages);
+
+    var uploadsDir = Path.Combine(uploadsBasePath, "audio");
+    Directory.CreateDirectory(uploadsDir);
+
+    var newPages = new List<Page>();
+    var pageNumber = 1;
+    foreach (var group in pageGroups)
+    {
+        var page = new Page
+        {
+            Id = Guid.NewGuid(),
+            BookId = id,
+            PageNumber = pageNumber,
+            ScriptText = group.Text
+        };
+
+        var audioFileName = $"{page.Id}.webm";
+        var audioFilePath = Path.Combine(uploadsDir, audioFileName);
+        try
+        {
+            // CHANGED - cutting from wavPath now, not tempFilePath
+            await transcriptionService.CutAudioSegment(wavPath, group.Start, group.End, audioFilePath);
+            page.AudioUrl = $"/uploads/audio/{audioFileName}";
+        }
+        catch (Exception cutEx)
+        {
+            Console.WriteLine($"[GenerateFromRecording] Audio cut FAILED for page {pageNumber}: {cutEx.Message}");
+        }
+
+        db.Pages.Add(page);
+        newPages.Add(page);
+        pageNumber++;
+    }
+
+    await db.SaveChangesAsync();
+    File.Delete(tempFilePath);
+    File.Delete(wavPath); // NEW - clean up the intermediate WAV too
+
+    return Results.Ok(newPages);
+})
+.RequireAuthorization()
+.WithName("GenerateFromRecording");
+
 app.MapPost("/books/{id}/generate-video", async (Guid id, StoryFunTimeDbContext db, VideoService videoService, HttpContext ctx) =>
 {
     var userId = ctx.GetUserId();
