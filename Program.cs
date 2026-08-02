@@ -1221,7 +1221,7 @@ app.MapPost("/books/{id}/generate-from-recording", async (Guid id, HttpRequest r
     {
         Console.WriteLine($"[GenerateFromRecording] Transcription FAILED: {transcribeEx.Message}");
         File.Delete(tempFilePath);
-        return Results.BadRequest("Could not transcribe the recording. Please try again.");
+        return Results.BadRequest($"TEMP DEBUG: {transcribeEx.Message}"); // remove after diagnosing
     }
 
     if (segments.Count == 0)
