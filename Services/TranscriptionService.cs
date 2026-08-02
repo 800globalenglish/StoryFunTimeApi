@@ -242,6 +242,95 @@ public class TranscriptionService
         return wavPath;
     }
 
+    // NEW - gets the total duration of an audio file via ffprobe.
+    public async Task<double> GetDurationSeconds(string audioPath)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "ffprobe",
+            Arguments = $"-i \"{audioPath}\" -show_entries format=duration -v quiet -of csv=p=0",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        using var process = new Process { StartInfo = startInfo };
+        process.Start();
+        var output = await process.StandardOutput.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return double.TryParse(output.Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out var seconds) ? seconds : 0;
+    }
+
+    // NEW - finds natural pause points using FFmpeg's silencedetect filter (mature,
+    // stable, nothing to do with the whisper filter that's been crashing). Returns
+    // the midpoint of each detected silence as a candidate page-break time.
+    public async Task<List<double>> DetectSilenceBreaks(string audioPath)
+    {
+        var args = $"-i \"{audioPath}\" -af \"silencedetect=noise=-30dB:d=0.6\" -f null -";
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "ffmpeg",
+            Arguments = args,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        using var process = new Process { StartInfo = startInfo };
+        process.Start();
+        var stderr = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+
+        var breaks = new List<double>();
+        var startMatches = Regex.Matches(stderr, @"silence_start:\s*(-?\d+\.?\d*)");
+        var endMatches = Regex.Matches(stderr, @"silence_end:\s*(-?\d+\.?\d*)");
+        for (int i = 0; i < Math.Min(startMatches.Count, endMatches.Count); i++)
+        {
+            if (double.TryParse(startMatches[i].Groups[1].Value, NumberStyles.Any, CultureInfo.InvariantCulture, out var s) &&
+                double.TryParse(endMatches[i].Groups[1].Value, NumberStyles.Any, CultureInfo.InvariantCulture, out var e))
+            {
+                breaks.Add((s + e) / 2.0);
+            }
+        }
+        return breaks;
+    }
+
+    // NEW - picks page-break points from the detected silences, aiming for pages
+    // roughly targetSecondsPerPage long, within min/max page count guardrails.
+    public List<(TimeSpan Start, TimeSpan End)> BuildPageRanges(
+        List<double> breakPoints, double totalDurationSeconds,
+        double targetSecondsPerPage = 15, int minPages = 5, int maxPages = 20)
+    {
+        int idealPages = Math.Max(minPages, Math.Min(maxPages,
+            (int)Math.Round(totalDurationSeconds / targetSecondsPerPage)));
+        idealPages = Math.Max(idealPages, 1);
+        double targetInterval = totalDurationSeconds / idealPages;
+
+        var sortedBreaks = breakPoints.Where(b => b > 0 && b < totalDurationSeconds).OrderBy(b => b).ToList();
+
+        var chosenBreaks = new List<double>();
+        double nextTarget = targetInterval;
+        foreach (var b in sortedBreaks)
+        {
+            if (b >= nextTarget)
+            {
+                chosenBreaks.Add(b);
+                nextTarget += targetInterval;
+                if (chosenBreaks.Count >= idealPages - 1) break;
+            }
+        }
+
+        var ranges = new List<(TimeSpan, TimeSpan)>();
+        double prev = 0;
+        foreach (var b in chosenBreaks)
+        {
+            ranges.Add((TimeSpan.FromSeconds(prev), TimeSpan.FromSeconds(b)));
+            prev = b;
+        }
+        ranges.Add((TimeSpan.FromSeconds(prev), TimeSpan.FromSeconds(totalDurationSeconds)));
+        return ranges;
+    }
+
     // NEW - cuts a slice out of the original recording for one page, given its
     // start/end timestamps. Re-encodes to webm/opus to match the .webm files your
     // /pages/{id}/audio endpoint already saves, so the Flutter player handles these
