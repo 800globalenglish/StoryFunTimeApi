@@ -1212,26 +1212,7 @@ app.MapPost("/books/{id}/generate-from-recording", async (Guid id, HttpRequest r
         await file.CopyToAsync(stream);
     }
 
-    List<TranscriptSegment> segments;
-    try
-    {
-        segments = await transcriptionService.TranscribeWithTimestamps(tempFilePath);
-    }
-    catch (Exception transcribeEx)
-    {
-        Console.WriteLine($"[GenerateFromRecording] Transcription FAILED: {transcribeEx.Message}");
-        File.Delete(tempFilePath);
-        return Results.BadRequest($"TEMP DEBUG: {transcribeEx.Message}"); // remove after diagnosing
-    }
-
-    if (segments.Count == 0)
-    {
-        File.Delete(tempFilePath);
-        return Results.BadRequest("No speech detected in the recording.");
-    }
-
-    // NEW - decode once to a reliably seekable WAV before cutting any pages
-    string wavPath;
+string wavPath;
     try
     {
         wavPath = await transcriptionService.DecodeToWav(tempFilePath);
@@ -1243,7 +1224,9 @@ app.MapPost("/books/{id}/generate-from-recording", async (Guid id, HttpRequest r
         return Results.BadRequest("Could not process the recording. Please try again.");
     }
 
-    var pageGroups = transcriptionService.GroupIntoPages(segments);
+    var totalDuration = await transcriptionService.GetDurationSeconds(wavPath);
+    var breaks = await transcriptionService.DetectSilenceBreaks(wavPath);
+    var pageRanges = transcriptionService.BuildPageRanges(breaks, totalDuration);
 
     // A book represents one story at a time - clear any existing pages, same as apply-template
     var existingPages = await db.Pages.Where(p => p.BookId == id).ToListAsync();
@@ -1253,28 +1236,28 @@ app.MapPost("/books/{id}/generate-from-recording", async (Guid id, HttpRequest r
     Directory.CreateDirectory(uploadsDir);
 
     var newPages = new List<Page>();
-    var pageNumber = 1;
-    foreach (var group in pageGroups)
+	var pageNumber = 1;
+    foreach (var range in pageRanges)
     {
         var page = new Page
         {
             Id = Guid.NewGuid(),
             BookId = id,
-            PageNumber = pageNumber,
-            ScriptText = group.Text
+            PageNumber = pageNumber
         };
 
         var audioFileName = $"{page.Id}.webm";
         var audioFilePath = Path.Combine(uploadsDir, audioFileName);
         try
         {
-            // CHANGED - cutting from wavPath now, not tempFilePath
-            await transcriptionService.CutAudioSegment(wavPath, group.Start, group.End, audioFilePath);
+            await transcriptionService.CutAudioSegment(wavPath, range.Start, range.End, audioFilePath);
             page.AudioUrl = $"/uploads/audio/{audioFileName}";
+            page.ScriptText = await transcriptionService.Transcribe(audioFilePath);
         }
-        catch (Exception cutEx)
+        catch (Exception pageEx)
         {
-            Console.WriteLine($"[GenerateFromRecording] Audio cut FAILED for page {pageNumber}: {cutEx.Message}");
+            Console.WriteLine($"[GenerateFromRecording] Page {pageNumber} FAILED: {pageEx.Message}");
+            page.ScriptText ??= "";
         }
 
         db.Pages.Add(page);
