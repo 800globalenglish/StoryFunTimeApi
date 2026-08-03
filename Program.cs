@@ -1236,7 +1236,7 @@ string wavPath;
     Directory.CreateDirectory(uploadsDir);
 
     var newPages = new List<Page>();
-	var pageNumber = 1;
+string wavPath;
     foreach (var range in pageRanges)
     {
         var page = new Page
