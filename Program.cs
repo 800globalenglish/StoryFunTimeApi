@@ -8,16 +8,21 @@ using Microsoft.IdentityModel.Tokens;
 using StoryFunTimeApi.Data;
 using StoryFunTimeApi.Models;
 using StoryFunTimeApi.Services;
+using Stripe;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
 using static OwnershipHelpers;
+using Stripe.Checkout;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddOpenApi();
 builder.Services.AddDbContext<StoryFunTimeDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+builder.Services.Configure<StripeSettings>(builder.Configuration.GetSection("Stripe"));
 
 builder.Services.AddCors(options =>
 {
@@ -58,6 +63,9 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 builder.Services.AddAuthorization();
 
 var app = builder.Build();
+
+StripeConfiguration.ApiKey = app.Configuration["Stripe:SecretKey"];
+
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
@@ -334,6 +342,24 @@ app.MapGet("/users/me/referrals", async (StoryFunTimeDbContext db, HttpContext c
 .RequireAuthorization()
 .WithName("GetMyReferrals");
 
+app.MapGet("/users/me/credits", async (HttpContext ctx, StoryFunTimeDbContext db) =>
+{
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+
+    var user = await db.Users.FindAsync(userId.Value);
+    if (user is null) return Results.Unauthorized();
+
+    return Results.Ok(new
+    {
+        creditBalance = user.CreditBalance,
+        bonusCredits = user.BonusCredits,
+        storageValidUntil = user.StorageValidUntil
+    });
+})
+.RequireAuthorization()
+.WithName("GetUserCredits");
+
 app.MapPost("/books", async (CreateBookRequest request, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
     var userId = ctx.GetUserId();
@@ -345,6 +371,7 @@ app.MapPost("/books", async (CreateBookRequest request, StoryFunTimeDbContext db
         UserId = userId.ToString()!,
         Title = request.Title,
         Theme = request.Theme,
+        StoryType = request.StoryType ?? "bedtime",
         Status = "draft",
         CreatedAt = DateTime.UtcNow,
         UpdatedAt = DateTime.UtcNow
@@ -427,7 +454,14 @@ app.MapPost("/pages/{id}/regenerate-text", async (Guid id, RegenerateTextRequest
 
     try
     {
-        var newPages = await grok.GenerateStoryPages(book.Title, book.Theme, 1, characterDescriptions, request?.ExtraInstructions);
+        var newPages = await grok.GenerateStoryPages(
+    book.Title,
+    book.Theme,
+    1,
+    characterDescriptions,
+    storyType: book.StoryType,
+    extraInstructions: request?.ExtraInstructions
+);
         page.ScriptText = newPages.FirstOrDefault() ?? page.ScriptText;
         await db.SaveChangesAsync();
 
@@ -575,14 +609,14 @@ app.MapPost("/books/{id}/characters", async (Guid id, HttpRequest request, Story
     character.OriginalPhotoUrl = $"/uploads/characters/{originalFileName}";
     try
     {
-        var imageBytes = await File.ReadAllBytesAsync(originalPath);
+        var imageBytes = await System.IO.File.ReadAllBytesAsync(originalPath);
         var cartoonUrl = await replicate.GenerateAvatarWithNanoBanana(imageBytes, file.ContentType ?? "image/jpeg", gender, role, ageRange, extraInstructions);
 
         using var httpClient = new HttpClient();
         var cartoonBytes = await httpClient.GetByteArrayAsync(cartoonUrl);
         var cartoonFileName = $"{character.Id}_{Guid.NewGuid()}.jpg";
         var cartoonPath = Path.Combine(uploadsDir, cartoonFileName);
-        await File.WriteAllBytesAsync(cartoonPath, cartoonBytes);
+        await System.IO.File.WriteAllBytesAsync(cartoonPath, cartoonBytes);
         character.CartoonAvatarUrl = $"/uploads/characters/{cartoonFileName}";
 
         db.AvatarHistory.Add(new CharacterAvatarHistory
@@ -658,7 +692,7 @@ app.MapPost("/characters/{id}/regenerate-avatar", async (Guid id, RegenerateAvat
     try
     {
         var originalPath = ResolveUploadPath(character.OriginalPhotoUrl);
-        var imageBytes = await File.ReadAllBytesAsync(originalPath);
+        var imageBytes = await System.IO.File.ReadAllBytesAsync(originalPath);
         var cartoonUrl = await replicate.GenerateAvatarWithNanoBanana(imageBytes, "image/jpeg", character.Gender, character.Role, character.AgeRange, request?.ExtraInstructions);
 
         using var httpClient = new HttpClient();
@@ -667,7 +701,7 @@ app.MapPost("/characters/{id}/regenerate-avatar", async (Guid id, RegenerateAvat
         var uploadsDir = Path.Combine(uploadsBasePath, "characters");
         var cartoonFileName = $"{character.Id}_{Guid.NewGuid()}.jpg";
         var cartoonPath = Path.Combine(uploadsDir, cartoonFileName);
-        await File.WriteAllBytesAsync(cartoonPath, cartoonBytes);
+        await System.IO.File.WriteAllBytesAsync(cartoonPath, cartoonBytes);
         var relativeUrl = $"/uploads/characters/{cartoonFileName}";
 
         character.CartoonAvatarUrl = relativeUrl;
@@ -743,7 +777,7 @@ app.MapPost("/pages/{id}/photo", async (Guid id, HttpRequest request, StoryFunTi
     try
     {
         // Read the bytes back for sending to Grok
-        var imageBytes = await File.ReadAllBytesAsync(originalPath);
+        var imageBytes = await System.IO.File.ReadAllBytesAsync(originalPath);
         var cartoonUrl = await grok.CartoonizeImage(imageBytes, file.ContentType ?? "image/jpeg", "", "", "", "");
 
         // Download the cartoonized result and save it locally too
@@ -751,7 +785,7 @@ app.MapPost("/pages/{id}/photo", async (Guid id, HttpRequest request, StoryFunTi
         var cartoonBytes = await httpClient.GetByteArrayAsync(cartoonUrl);
         var cartoonFileName = $"{id}_cartoon.jpg";
         var cartoonPath = Path.Combine(uploadsDir, cartoonFileName);
-        await File.WriteAllBytesAsync(cartoonPath, cartoonBytes);
+        await System.IO.File.WriteAllBytesAsync(cartoonPath, cartoonBytes);
 
         page.CartoonImageUrl = $"/uploads/photos/{cartoonFileName}";
     }
@@ -842,7 +876,7 @@ app.MapPost("/pages/{id}/generate-scene", async (Guid id, GenerateSceneRequest? 
         foreach (var character in avatarsWithPhotos)
         {
             var avatarPath = ResolveUploadPath(character.CartoonAvatarUrl!);
-            var bytes = await File.ReadAllBytesAsync(avatarPath);
+            var bytes = await System.IO.File.ReadAllBytesAsync(avatarPath);
             avatarImages.Add((bytes, "image/jpeg", character.Name, character.Gender));
         }
 
@@ -856,13 +890,13 @@ app.MapPost("/pages/{id}/generate-scene", async (Guid id, GenerateSceneRequest? 
 
         var currentPath = Path.Combine(uploadsDir, $"{id}_scene.jpg");
         var previousPath = Path.Combine(uploadsDir, $"{id}_scene_previous.jpg");
-        if (File.Exists(currentPath))
+        if (System.IO.File.Exists(currentPath))
         {
-            File.Copy(currentPath, previousPath, overwrite: true);
+            System.IO.File.Copy(currentPath, previousPath, overwrite: true);
             page.PreviousCartoonImageUrl = $"/uploads/scenes/{id}_scene_previous.jpg";
         }
 
-        await File.WriteAllBytesAsync(currentPath, sceneBytes);
+        await System.IO.File.WriteAllBytesAsync(currentPath, sceneBytes);
         page.CartoonImageUrl = $"/uploads/scenes/{id}_scene.jpg";
         await db.SaveChangesAsync();
 
@@ -882,23 +916,18 @@ app.MapPost("/books/{id}/generate-script", async (Guid id, GenerateScriptRequest
 {
     var userId = ctx.GetUserId();
     if (userId is null) return Results.Unauthorized();
-
     var book = await db.Books.FirstOrDefaultAsync(b => b.Id == id);
     if (book is null) return Results.NotFound($"Book {id} not found");
     if (book.UserId != userId.Value.ToString()) return Results.NotFound($"Book {id} not found");
-
     var characters = await db.Characters.Where(c => c.BookId == id).ToListAsync();
     var characterDescriptions = characters.Select(c => $"{c.Name} ({c.Role})").ToList();
-
     var pageCount = request.PageCount ?? 5;
-
     if (!string.IsNullOrWhiteSpace(request.Title)) book.Title = request.Title;
     if (!string.IsNullOrWhiteSpace(request.Theme)) book.Theme = request.Theme;
     await db.SaveChangesAsync();
-
     try
     {
-        var pages = await grok.GenerateStoryPages(book.Title, book.Theme, pageCount, characterDescriptions);
+        var pages = await grok.GenerateStoryPages(book.Title, book.Theme, pageCount, characterDescriptions, storyType: book.StoryType);
         return Results.Ok(new { pages });
     }
     catch (Exception ex)
@@ -910,6 +939,8 @@ app.MapPost("/books/{id}/generate-script", async (Guid id, GenerateScriptRequest
 .WithName("GenerateScript");
 
 // --- sample endpoint, left as-is for now ---
+
+
 
 var summaries = new[]
 {
@@ -982,9 +1013,9 @@ app.MapDelete("/characters/{id}/avatar-history/{historyId}", async (Guid id, Gui
     var uploadsDir = Path.Combine(uploadsBasePath, "characters");
     var fileName = Path.GetFileName(history.Url);
     var filePath = Path.Combine(uploadsDir, fileName);
-    if (File.Exists(filePath))
+    if (System.IO.File.Exists(filePath))
     {
-        File.Delete(filePath);
+        System.IO.File.Delete(filePath);
     }
 
     db.AvatarHistory.Remove(history);
@@ -1220,7 +1251,7 @@ string wavPath;
     catch (Exception decodeEx)
     {
         Console.WriteLine($"[GenerateFromRecording] WAV decode FAILED: {decodeEx.Message}");
-        File.Delete(tempFilePath);
+        System.IO.File.Delete(tempFilePath);
         return Results.BadRequest("Could not process the recording. Please try again.");
     }
 
@@ -1236,7 +1267,7 @@ string wavPath;
     Directory.CreateDirectory(uploadsDir);
 
     var newPages = new List<Page>();
-string wavPath;
+    var pageNumber = 1;
     foreach (var range in pageRanges)
     {
         var page = new Page
@@ -1266,8 +1297,8 @@ string wavPath;
     }
 
     await db.SaveChangesAsync();
-    File.Delete(tempFilePath);
-    File.Delete(wavPath); // NEW - clean up the intermediate WAV too
+    System.IO.File.Delete(tempFilePath);
+    System.IO.File.Delete(wavPath); // NEW - clean up the intermediate WAV too
 
     return Results.Ok(newPages);
 })
@@ -1332,7 +1363,7 @@ app.MapGet("/books/{id}/video/download", async (Guid id, StoryFunTimeDbContext d
     if (book is null || book.VideoUrl is null) return Results.NotFound();
 
     var filePath = ResolveUploadPath(book.VideoUrl);
-    if (!File.Exists(filePath)) return Results.NotFound();
+    if (!System.IO.File.Exists(filePath)) return Results.NotFound();
 
     var safeTitle = string.Concat(book.Title.Split(Path.GetInvalidFileNameChars()));
     var downloadName = string.IsNullOrWhiteSpace(safeTitle) ? $"{id}.mp4" : $"{safeTitle}.mp4";
@@ -1374,6 +1405,112 @@ app.MapPost("/books/{id}/characters/copy", async (Guid id, CopyCharactersRequest
 .RequireAuthorization()
 .WithName("CopyCharactersToBook");
 
+app.MapPost("/payments/checkout-session", async (
+    CheckoutRequest request,
+    HttpContext ctx,
+    StoryFunTimeDbContext db,
+    IOptions<StripeSettings> stripeOptions) =>
+{
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+
+    var user = await db.Users.FindAsync(userId.Value);
+    if (user is null) return Results.Unauthorized();
+
+    var settings = stripeOptions.Value;
+    if (!settings.Prices.TryGetValue(request.Product, out var priceId))
+        return Results.BadRequest(new { error = "Unknown product." });
+
+    var options = new SessionCreateOptions
+    {
+        Mode = "payment",
+        LineItems = new List<SessionLineItemOptions>
+        {
+            new SessionLineItemOptions { Price = priceId, Quantity = 1 }
+        },
+        ClientReferenceId = user.Id.ToString(),
+        SuccessUrl = "https://www.storyfuntime.com/go/#/payment-success?session_id={CHECKOUT_SESSION_ID}",
+        CancelUrl = "https://www.storyfuntime.com/go/#/payment-cancelled",
+        Metadata = new Dictionary<string, string>
+        {
+            { "userId", user.Id.ToString() },
+            { "product", request.Product }
+        }
+    };
+
+    var service = new SessionService();
+    var session = await service.CreateAsync(options);
+
+    return Results.Ok(new { checkoutUrl = session.Url });
+})
+.RequireAuthorization()
+.WithName("CreateCheckoutSession");
+
+
+app.MapPost("/payments/webhook", async (
+    HttpRequest request,
+    StoryFunTimeDbContext db,
+    IOptions<StripeSettings> stripeOptions) =>
+{
+    var json = await new StreamReader(request.Body).ReadToEndAsync();
+    var settings = stripeOptions.Value;
+
+    Event stripeEvent;
+    try
+    {
+        stripeEvent = EventUtility.ConstructEvent(json, request.Headers["Stripe-Signature"], settings.WebhookSecret);
+    }
+    catch (StripeException)
+    {
+        return Results.BadRequest();
+    }
+
+    if (stripeEvent.Type == EventTypes.CheckoutSessionCompleted)
+    {
+        var session = stripeEvent.Data.Object as Session;
+        if (session is null) return Results.Ok();
+
+        var alreadyProcessed = await db.CreditTransactions.AnyAsync(t => t.StripeSessionId == session.Id);
+        if (alreadyProcessed) return Results.Ok();
+
+        if (!Guid.TryParse(session.ClientReferenceId, out var userId)) return Results.Ok();
+        var user = await db.Users.FindAsync(userId);
+        if (user is null) return Results.Ok();
+
+        var sessionService = new SessionService();
+        var fullSession = await sessionService.GetAsync(session.Id, new SessionGetOptions
+        {
+            Expand = new List<string> { "line_items" }
+        });
+
+        var priceId = fullSession.LineItems?.Data?.FirstOrDefault()?.Price?.Id;
+        if (priceId is null) return Results.Ok();
+
+        var priceService = new PriceService();
+        var price = await priceService.GetAsync(priceId);
+        var credits = int.Parse(price.Metadata.GetValueOrDefault("credits", "0"));
+        var storageDays = int.Parse(price.Metadata.GetValueOrDefault("storage_days", "365"));
+
+        user.CreditBalance += credits;
+        user.StorageValidUntil = DateTime.UtcNow.AddDays(storageDays);
+
+        db.CreditTransactions.Add(new CreditTransaction
+        {
+            UserId = user.Id,
+            Type = "Purchase",
+            CreditsDelta = credits,
+            Description = $"Stripe checkout session {session.Id}",
+            StripeSessionId = session.Id,
+            CreatedAt = DateTime.UtcNow
+        });
+
+        await db.SaveChangesAsync();
+    }
+
+    return Results.Ok();
+})
+.WithName("StripeWebhook");
+
 async Task TrimAvatarHistoryAsync(Guid characterId, StoryFunTimeDbContext db, string uploadsDir)
 {
     var all = await db.AvatarHistory
@@ -1386,9 +1523,9 @@ async Task TrimAvatarHistoryAsync(Guid characterId, StoryFunTimeDbContext db, st
     {
         var fileName = Path.GetFileName(old.Url);
         var filePath = Path.Combine(uploadsDir, fileName);
-        if (File.Exists(filePath))
+        if (System.IO.File.Exists(filePath))
         {
-            File.Delete(filePath);
+            System.IO.File.Delete(filePath);
         }
         db.AvatarHistory.Remove(old);
     }
@@ -1405,7 +1542,7 @@ record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
     public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
 }
 
-record CreateBookRequest(string Title, string Theme);
+record CreateBookRequest(string Title, string Theme, string? StoryType = null);
 record UpdateBookRequest(string Title, string Theme);
 record CreatePageRequest(int PageNumber, string ScriptText, string? OriginalPhotoUrl, string? CartoonImageUrl, string? AudioUrl);
 record GenerateScriptRequest(int? PageCount, string? Title, string? Theme);
@@ -1477,3 +1614,5 @@ record SignupRequest(string Email, string Username, string Password, string? Ref
 record LoginRequest(string EmailOrUsername, string Password);
 record ForgotPasswordRequest(string EmailOrUsername);
 record ResetPasswordRequest(string Token, string NewPassword);
+
+public record CheckoutRequest(string Product); // "Starter", "TopupSmall", "TopupMedium", "TopupLarge"

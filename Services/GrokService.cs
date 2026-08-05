@@ -15,19 +15,37 @@ public class GrokService
         _apiKey = configuration["Grok:ApiKey"] ?? throw new Exception("Grok API key not configured");
     }
 
-    public async Task<List<string>> GenerateStoryPages(string title, string theme, int pageCount, List<string> characterDescriptions, string? extraInstructions = null)
+    public async Task<List<string>> GenerateStoryPages(string title, string theme, int pageCount, List<string> characterDescriptions, string storyType = "bedtime", string? extraInstructions = null)
     {
         var charactersText = characterDescriptions.Count > 0
     ? $"The story features these real people, who should be called by name throughout: {string.Join(", ", characterDescriptions)}."
     : "";
 
+        var styleText = storyType switch
+        {
+            "adventure" => "an exciting adventure story full of action and discovery",
+            "sillyFunny" => "a silly, funny story full of humor and playful situations",
+            "fairyTale" => "a classic fairy tale, with a magical, once-upon-a-time feel",
+            "superhero" => "an exciting superhero story about using powers to help others",
+            "mystery" => "a gentle mystery story where the characters solve a fun puzzle or clue",
+            "spaceAdventure" => "a space adventure story with rockets, planets, and exploration",
+            "animalFriends" => "a heartwarming story about animal friends",
+            "learning" => "a gentle, educational story that teaches something new in a fun way",
+            _ => "a gentle, warm bedtime story"
+        };
+
+        var endingNote = storyType == "bedtime"
+            ? "End the story with the character winding down, feeling sleepy, and settling in for bed — a calm, cozy bedtime conclusion."
+            : "Do NOT end the story with anyone falling asleep, going to bed, yawning, or any nighttime/bedtime imagery — end it in a way that naturally fits this story's own style instead (e.g. a triumphant finish, a happy resolution, a satisfying discovery).";
+
         var prompt = $@"Write a short, warm children's story titled ""{title}"" about {theme}.
-{charactersText}
-Break it into exactly {pageCount} pages, each 1-3 sentences, simple enough for a young child to follow when read aloud.
-The story should be gentle, positive, and suitable for bedtime reading.
-{(!string.IsNullOrWhiteSpace(extraInstructions) ? $"\nAdditional instructions: {extraInstructions}." : "")}
-Respond with ONLY a JSON array of strings, one string per page, in order. No other text, no markdown formatting, just the raw JSON array.
-Example format: [""Page 1 text here."", ""Page 2 text here.""]";
+            {charactersText}
+            Break it into exactly {pageCount} pages, each 1-3 sentences, simple enough for a young child to follow when read aloud.
+            This should be {styleText}, positive and suitable for children.
+            {endingNote}
+            {(!string.IsNullOrWhiteSpace(extraInstructions) ? $"\nAdditional instructions: {extraInstructions}." : "")}
+            Respond with ONLY a JSON array of strings, one string per page, in order. No other text, no markdown formatting, just the raw JSON array.
+            Example format: [""Page 1 text here."", ""Page 2 text here.""]";
 
         var requestBody = new
         {
@@ -98,7 +116,7 @@ Example format: [""Page 1 text here."", ""Page 2 text here.""]";
                 "0-2" => "an infant or toddler — large head relative to body, round chubby cheeks, no facial hair, very short or no hair",
                 "3-5" => "a young preschool-aged child — small child proportions, soft round face",
                 "6-9" => "a young school-aged child",
-                "10-13" => "a preteePS C:\\Users\\fancy\\source\\repos\\StoryFunTimeApi> cd C:\\Users\\fancy\\source\\repos\\StoryFunTimeApi\r\nPS C:\\Users\\fancy\\source\\repos\\StoryFunTimeApi> dotnet build\r\nRestore complete (0.3s)\r\n  StoryFunTimeApi succeeded with 1 warning(s) (0.8s) → bin\\Debug\\net9.0\\StoryFunTimeApi.dll\r\n    C:\\Users\\fancy\\source\\repos\\StoryFunTimeApi\\Program.cs(274,113): warning CS8604: Possible null reference argument for parameter 'ageRange' in 'Task<string> GrokService.CartoonizeImage(byte[] imageBytes, string contentType, string gender, string role, string ageRange, string? extraInstructions = null)'.\r\n\r\nBuild succeeded with 1 warning(s) in 1.5sn, noticeably taller and less baby-faced than a young child",
+                "10-13" => "a preteen, noticeably taller and less baby-faced than a young child",
                 "14-18" => "a teenager, with more adult-like facial proportions",
                 "40-50" => "a middle-aged adult in their 40s",
                 "51-65" => "an adult in their 50s or early 60s, possibly with some gray or graying hair",
@@ -138,7 +156,6 @@ Example format: [""Page 1 text here."", ""Page 2 text here.""]";
         using var doc = JsonDocument.Parse(responseBody);
         var root = doc.RootElement;
 
-        // Try a couple of possible response shapes, since this is a newer endpoint
         if (root.TryGetProperty("data", out var dataArray) && dataArray.GetArrayLength() > 0)
         {
             return dataArray[0].GetProperty("url").GetString() ?? throw new Exception("No URL in response");

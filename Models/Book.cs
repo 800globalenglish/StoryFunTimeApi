@@ -6,6 +6,7 @@ public class Book
     public string UserId { get; set; } = string.Empty;
     public string Title { get; set; } = string.Empty;
     public string Theme { get; set; } = string.Empty;
+    public string StoryType { get; set; } = "bedtime";
     public string Status { get; set; } = "draft";
     public bool IsLibrary { get; set; } = false;
     public string? VideoUrl { get; set; }

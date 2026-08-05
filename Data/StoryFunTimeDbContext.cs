@@ -16,6 +16,7 @@ public class StoryFunTimeDbContext : DbContext
     public DbSet<StoryTemplate> StoryTemplates { get; set; }
     public DbSet<StoryTemplatePage> StoryTemplatePages { get; set; }
     public DbSet<User> Users => Set<User>();
+    public DbSet<CreditTransaction> CreditTransactions { get; set; }
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<User>()
@@ -24,5 +25,9 @@ public class StoryFunTimeDbContext : DbContext
         modelBuilder.Entity<User>()
             .HasIndex(u => u.Username)
             .IsUnique();
+        modelBuilder.Entity<CreditTransaction>()
+            .HasIndex(t => t.StripeSessionId)
+            .IsUnique()
+            .HasFilter("[StripeSessionId] IS NOT NULL");
     }
 }

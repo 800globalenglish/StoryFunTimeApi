@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using StoryFunTimeApi.Data;
 
@@ -11,9 +12,11 @@ using StoryFunTimeApi.Data;
 namespace StoryFunTimeApi.Migrations
 {
     [DbContext(typeof(StoryFunTimeDbContext))]
-    partial class StoryFunTimeDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260803130005_AddCreditsStorageAndTransactions")]
+    partial class AddCreditsStorageAndTransactions
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -47,7 +50,10 @@ namespace StoryFunTimeApi.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<Guid>("UserId")
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("UserId1")
                         .HasColumnType("uniqueidentifier");
 
                     b.HasKey("Id");
@@ -56,7 +62,7 @@ namespace StoryFunTimeApi.Migrations
                         .IsUnique()
                         .HasFilter("[StripeSessionId] IS NOT NULL");
 
-                    b.HasIndex("UserId");
+                    b.HasIndex("UserId1");
 
                     b.ToTable("CreditTransactions");
                 });
@@ -74,10 +80,6 @@ namespace StoryFunTimeApi.Migrations
                         .HasColumnType("bit");
 
                     b.Property<string>("Status")
-                        .IsRequired()
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("StoryType")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
@@ -322,7 +324,7 @@ namespace StoryFunTimeApi.Migrations
                 {
                     b.HasOne("StoryFunTimeApi.Models.User", "User")
                         .WithMany()
-                        .HasForeignKey("UserId")
+                        .HasForeignKey("UserId1")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
