@@ -1305,6 +1305,56 @@ string wavPath;
 .RequireAuthorization()
 .WithName("GenerateFromRecording");
 
+app.MapPost("/transcribe", async (HttpRequest request, TranscriptionService transcriptionService, HttpContext ctx) =>
+{
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    if (!request.HasFormContentType) return Results.BadRequest("Expected form data");
+    var form = await request.ReadFormAsync();
+    var file = form.Files.GetFile("audio");
+    if (file is null || file.Length == 0) return Results.BadRequest("No audio file provided");
+
+    var tempDir = "temp_recordings";
+    Directory.CreateDirectory(tempDir);
+    var tempFilePath = Path.Combine(tempDir, $"{Guid.NewGuid()}.webm");
+    using (var stream = new FileStream(tempFilePath, FileMode.Create))
+    {
+        await file.CopyToAsync(stream);
+    }
+
+    string wavPath;
+    try
+    {
+        wavPath = await transcriptionService.DecodeToWav(tempFilePath);
+    }
+    catch (Exception decodeEx)
+    {
+        Console.WriteLine($"[Transcribe] WAV decode FAILED: {decodeEx.Message}");
+        System.IO.File.Delete(tempFilePath);
+        return Results.BadRequest("Could not process the recording. Please try again.");
+    }
+
+    string text;
+    try
+    {
+        text = await transcriptionService.Transcribe(wavPath);
+    }
+    catch (Exception transcribeEx)
+    {
+        Console.WriteLine($"[Transcribe] Transcription FAILED: {transcribeEx.Message}");
+        System.IO.File.Delete(tempFilePath);
+        System.IO.File.Delete(wavPath);
+        return Results.Problem($"Transcription failed: {transcribeEx.Message}");
+    }
+
+    System.IO.File.Delete(tempFilePath);
+    System.IO.File.Delete(wavPath);
+
+    return Results.Ok(new { text });
+})
+.RequireAuthorization()
+.WithName("TranscribeAudio");
+
 app.MapPost("/books/{id}/generate-video", async (Guid id, StoryFunTimeDbContext db, VideoService videoService, HttpContext ctx) =>
 {
     var userId = ctx.GetUserId();
