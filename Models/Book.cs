@@ -12,7 +12,7 @@ public class Book
     public string? VideoUrl { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
-
+    public string? PdfUrl { get; set; }
     public List<Page> Pages { get; set; } = new();
     public List<Character> Characters { get; set; } = new();
 }

@@ -40,7 +40,7 @@ builder.Services.AddHttpClient<EmailService>();
 builder.Services.AddHttpClient<ReplicateService>();
 builder.Services.AddSingleton<VideoService>();
 builder.Services.AddSingleton<TranscriptionService>();
-
+builder.Services.AddSingleton<PdfService>();
 builder.Services.AddSingleton<PhotoFilterService>();
 
 builder.Services.AddSingleton<PasswordHasher<User>>();
@@ -802,7 +802,7 @@ app.MapPost("/pages/{id}/photo", async (Guid id, HttpRequest request, StoryFunTi
 .RequireAuthorization()
 .WithName("UploadPagePhoto");
 
-app.MapPost("/pages/{id}/audio", async (Guid id, HttpRequest request, StoryFunTimeDbContext db, TranscriptionService transcriptionService, HttpContext ctx) =>
+app.MapPost("/pages/{id}/audio", async (Guid id, HttpRequest request, StoryFunTimeDbContext db, TranscriptionService transcriptionService, IServiceScopeFactory scopeFactory, HttpContext ctx) =>
 {
     var userId = ctx.GetUserId();
     if (userId is null) return Results.Unauthorized();
@@ -829,20 +829,34 @@ app.MapPost("/pages/{id}/audio", async (Guid id, HttpRequest request, StoryFunTi
     }
 
     page.AudioUrl = $"/uploads/audio/{fileName}";
-
-    try
-    {
-        var transcribedText = await transcriptionService.Transcribe(filePath);
-        if (!string.IsNullOrWhiteSpace(transcribedText))
-        {
-            page.ScriptText = transcribedText;
-        }
-    }
-    catch (Exception transcribeEx)
-    {
-        Console.WriteLine($"[Transcription] FAILED: {transcribeEx.Message}");
-    }
     await db.SaveChangesAsync();
+
+    // Transcription (local Whisper via ffmpeg) can take several seconds -
+    // respond with the saved audio immediately, then transcribe in the
+    // background using a fresh DbContext scope, since this request's `db`
+    // is disposed as soon as we return.
+    _ = Task.Run(async () =>
+    {
+        try
+        {
+            var transcribedText = await transcriptionService.Transcribe(filePath);
+            if (!string.IsNullOrWhiteSpace(transcribedText))
+            {
+                using var scope = scopeFactory.CreateScope();
+                var scopedDb = scope.ServiceProvider.GetRequiredService<StoryFunTimeDbContext>();
+                var scopedPage = await scopedDb.Pages.FirstOrDefaultAsync(p => p.Id == id);
+                if (scopedPage is not null)
+                {
+                    scopedPage.ScriptText = transcribedText;
+                    await scopedDb.SaveChangesAsync();
+                }
+            }
+        }
+        catch (Exception transcribeEx)
+        {
+            Console.WriteLine($"[Transcription] FAILED: {transcribeEx.Message}");
+        }
+    });
 
     return Results.Ok(page);
 })
@@ -940,26 +954,29 @@ app.MapPost("/books/{id}/generate-script", async (Guid id, GenerateScriptRequest
 
 // --- sample endpoint, left as-is for now ---
 
-
-
-var summaries = new[]
+app.MapPut("/characters/{id}/rename", async (Guid id, RenameCharacterRequest request, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
-    "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
-};
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
 
-app.MapGet("/weatherforecast", () =>
-{
-    var forecast = Enumerable.Range(1, 5).Select(index =>
-        new WeatherForecast
-        (
-            DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
-            Random.Shared.Next(-20, 55),
-            summaries[Random.Shared.Next(summaries.Length)]
-        ))
-        .ToArray();
-    return forecast;
+    var character = await db.Characters.FirstOrDefaultAsync(c => c.Id == id);
+    if (character is null) return Results.NotFound($"Character {id} not found");
+
+    // Verify ownership via the book this character belongs to
+    var book = await db.Books.FirstOrDefaultAsync(b => b.Id == character.BookId);
+    if (book is null || book.UserId != userId.Value.ToString()) return Results.NotFound($"Character {id} not found");
+
+    if (string.IsNullOrWhiteSpace(request.Name)) return Results.BadRequest("Name is required");
+
+    character.Name = request.Name.Trim();
+    await db.SaveChangesAsync();
+
+    return Results.Ok(character);
 })
-.WithName("GetWeatherForecast");
+.RequireAuthorization()
+.WithName("RenameCharacter");
+
+
 
 app.MapGet("/characters/{id}/avatar-history", async (Guid id, StoryFunTimeDbContext db, HttpContext ctx) =>
 {
@@ -1561,6 +1578,66 @@ app.MapPost("/payments/webhook", async (
 })
 .WithName("StripeWebhook");
 
+app.MapPost("/books/{id}/generate-script-from-text", async (Guid id, GenerateFromTextRequest request, StoryFunTimeDbContext db, GrokService grok, HttpContext ctx) =>
+{
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    var book = await db.Books.FirstOrDefaultAsync(b => b.Id == id);
+    if (book is null) return Results.NotFound($"Book {id} not found");
+    if (book.UserId != userId.Value.ToString()) return Results.NotFound($"Book {id} not found");
+
+    if (string.IsNullOrWhiteSpace(request.UserText)) return Results.BadRequest("Story text is required");
+
+    const int maxChars = 5000;
+    if (request.UserText.Length > maxChars) return Results.BadRequest($"Text must be {maxChars} characters or fewer");
+
+    var pageCount = request.PageCount ?? 5;
+    if (!string.IsNullOrWhiteSpace(request.Title)) book.Title = request.Title;
+    if (!string.IsNullOrWhiteSpace(request.Theme)) book.Theme = request.Theme;
+    await db.SaveChangesAsync();
+
+    try
+    {
+        var pages = request.ExactText
+            ? grok.SplitTextExact(request.UserText, pageCount)
+            : await grok.SplitTextIntoScenes(request.UserText, pageCount);
+        return Results.Ok(new { pages });
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem($"Story generation from text failed: {ex.Message}");
+    }
+})
+.RequireAuthorization()
+.WithName("GenerateScriptFromText");
+
+app.MapPost("/books/{id}/generate-pdf", async (Guid id, StoryFunTimeDbContext db, PdfService pdfService, HttpContext ctx) =>
+{
+    var userId = ctx.GetUserId();
+    if (userId is null) return Results.Unauthorized();
+    var book = await db.Books.FirstOrDefaultAsync(b => b.Id == id);
+    if (book is null) return Results.NotFound($"Book {id} not found");
+    if (book.UserId != userId.Value.ToString()) return Results.NotFound($"Book {id} not found");
+
+    var pages = await db.Pages.Where(p => p.BookId == id).ToListAsync();
+    if (pages.Count == 0) return Results.BadRequest("This book has no pages yet");
+
+    var pdfBytes = pdfService.GenerateBookPdf(book, pages, uploadsBasePath);
+
+    var pdfsDir = Path.Combine(uploadsBasePath, "pdfs");
+    Directory.CreateDirectory(pdfsDir);
+    var fileName = $"{Guid.NewGuid()}.pdf";
+    var filePath = Path.Combine(pdfsDir, fileName);
+    await System.IO.File.WriteAllBytesAsync(filePath, pdfBytes);
+
+    book.PdfUrl = $"/uploads/pdfs/{fileName}";
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new { pdfUrl = book.PdfUrl });
+})
+.RequireAuthorization()
+.WithName("GenerateBookPdf");
+
 async Task TrimAvatarHistoryAsync(Guid characterId, StoryFunTimeDbContext db, string uploadsDir)
 {
     var all = await db.AvatarHistory
@@ -1586,11 +1663,6 @@ async Task TrimAvatarHistoryAsync(Guid characterId, StoryFunTimeDbContext db, st
 }
 
 app.Run();
-
-record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
-{
-    public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
-}
 
 record CreateBookRequest(string Title, string Theme, string? StoryType = null);
 record UpdateBookRequest(string Title, string Theme);
@@ -1664,5 +1736,6 @@ record SignupRequest(string Email, string Username, string Password, string? Ref
 record LoginRequest(string EmailOrUsername, string Password);
 record ForgotPasswordRequest(string EmailOrUsername);
 record ResetPasswordRequest(string Token, string NewPassword);
-
+record GenerateFromTextRequest(string UserText, string? Title, string? Theme, int? PageCount, bool ExactText = false);
 public record CheckoutRequest(string Product); // "Starter", "TopupSmall", "TopupMedium", "TopupLarge"
+record RenameCharacterRequest(string Name);

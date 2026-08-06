@@ -18,8 +18,8 @@ public class GrokService
     public async Task<List<string>> GenerateStoryPages(string title, string theme, int pageCount, List<string> characterDescriptions, string storyType = "bedtime", string? extraInstructions = null)
     {
         var charactersText = characterDescriptions.Count > 0
-    ? $"The story features these real people, who should be called by name throughout: {string.Join(", ", characterDescriptions)}."
-    : "";
+            ? $"The story features these real people, who should be called by name throughout: {string.Join(", ", characterDescriptions)}. Every single one of them must play an active, meaningful part in the story from beginning to end — do not just mention a character's name once and drop them. Do NOT invent or add any additional characters, people, or animals beyond the ones listed here."
+            : "";
 
         var styleText = storyType switch
         {
@@ -31,29 +31,30 @@ public class GrokService
             "spaceAdventure" => "a space adventure story with rockets, planets, and exploration",
             "animalFriends" => "a heartwarming story about animal friends",
             "learning" => "a gentle, educational story that teaches something new in a fun way",
+            "ownTheme" => "a story that's true to its own title and theme",
             _ => "a gentle, warm bedtime story"
         };
 
         var endingNote = storyType == "bedtime"
             ? "End the story with the character winding down, feeling sleepy, and settling in for bed — a calm, cozy bedtime conclusion."
-            : "Do NOT end the story with anyone falling asleep, going to bed, yawning, or any nighttime/bedtime imagery — end it in a way that naturally fits this story's own style instead (e.g. a triumphant finish, a happy resolution, a satisfying discovery).";
+            : "IMPORTANT: this is NOT a bedtime story. Do NOT end it with anyone falling asleep, yawning, getting tucked in, or going to bed — no nighttime or bedtime imagery of any kind. End it in whatever way naturally fits THIS story instead, such as a triumphant finish, a happy resolution, solving the mystery, or a satisfying discovery.";
 
-        var prompt = $@"Write a short, warm children's story titled ""{title}"" about {theme}.
-            {charactersText}
-            Break it into exactly {pageCount} pages, each 1-3 sentences, simple enough for a young child to follow when read aloud.
-            This should be {styleText}, positive and suitable for children.
-            {endingNote}
-            {(!string.IsNullOrWhiteSpace(extraInstructions) ? $"\nAdditional instructions: {extraInstructions}." : "")}
-            Respond with ONLY a JSON array of strings, one string per page, in order. No other text, no markdown formatting, just the raw JSON array.
-            Example format: [""Page 1 text here."", ""Page 2 text here.""]";
+        var prompt = $@"Write a short story titled ""{title}"" about {theme}.
+{charactersText}
+Break it into exactly {pageCount} pages, each 1-3 sentences, simple enough to read aloud.
+This should be {styleText}.
+{endingNote}
+{(!string.IsNullOrWhiteSpace(extraInstructions) ? $"\nAdditional instructions: {extraInstructions}." : "")}
+Respond with ONLY a JSON array of strings, one string per page, in order. No other text, no markdown formatting, just the raw JSON array.
+Example format: [""Page 1 text here."", ""Page 2 text here.""]";
 
         var requestBody = new
         {
             model = "grok-4-0709",
             messages = new[]
             {
-                new { role = "user", content = prompt }
-            }
+            new { role = "user", content = prompt }
+        }
         };
 
         var request = new HttpRequestMessage(HttpMethod.Post, "https://api.x.ai/v1/chat/completions");
@@ -221,4 +222,114 @@ public class GrokService
 
         throw new Exception($"Unexpected response shape: {responseBody}");
     }
+
+    public async Task<List<string>> SplitTextIntoScenes(string userText, int pageCount)
+    {
+        var prompt = $@"Here is a story someone wrote:
+
+""{userText}""
+
+Break this story into exactly {pageCount} pages for a children's storybook. Each page 
+MUST end at the close of a complete sentence — never cut off mid-sentence. Distribute 
+the story as evenly as possible across the {pageCount} pages. Don't summarize or 
+shorten the story — every part of the original text should be represented across the 
+pages.
+Preserve the original story, characters, and plot exactly as written — do not invent 
+new events or change what happens.
+You may lightly smooth the wording for flow and readability where needed, but stay 
+faithful to the original text's content and meaning.
+Respond with ONLY a JSON array of strings, one string per page, in order. No other 
+text, no markdown formatting, just the raw JSON array.
+Example format: [""Page 1 text here."", ""Page 2 text here.""]";
+
+        var requestBody = new
+        {
+            model = "grok-4-0709",
+            messages = new[]
+            {
+            new { role = "user", content = prompt }
+        }
+        };
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "https://api.x.ai/v1/chat/completions");
+        request.Headers.Add("Authorization", $"Bearer {_apiKey}");
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(requestBody),
+            Encoding.UTF8,
+            "application/json"
+        );
+
+        var response = await _httpClient.SendAsync(request);
+        var responseBody = await response.Content.ReadAsStringAsync();
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new Exception($"Grok API error ({response.StatusCode}): {responseBody}");
+        }
+
+        using var doc = JsonDocument.Parse(responseBody);
+        var content = doc.RootElement
+            .GetProperty("choices")[0]
+            .GetProperty("message")
+            .GetProperty("content")
+            .GetString() ?? "[]";
+
+        content = content.Trim();
+        if (content.StartsWith("```"))
+        {
+            content = content.Substring(content.IndexOf('\n') + 1);
+            content = content.Substring(0, content.LastIndexOf("```"));
+        }
+
+        var pages = JsonSerializer.Deserialize<List<string>>(content.Trim());
+        return pages ?? new List<string>();
+    }
+
+    public List<string> SplitTextExact(string userText, int pageCount)
+    {
+        var sentences = System.Text.RegularExpressions.Regex
+            .Matches(userText.Trim(), @"[^.!?]+[.!?]+(?:\s+|$)")
+            .Select(m => m.Value.Trim())
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .ToList();
+
+        if (sentences.Count == 0) sentences = new List<string> { userText.Trim() };
+        pageCount = Math.Max(1, Math.Min(pageCount, sentences.Count));
+
+        var wordCounts = sentences
+            .Select(s => s.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).Length)
+            .ToList();
+        var totalWords = wordCounts.Sum();
+        var targetPerPage = (double)totalWords / pageCount;
+
+        var pages = new List<string>();
+        var currentPageSentences = new List<string>();
+        var currentWordCount = 0;
+        var pagesCreated = 0;
+
+        for (int i = 0; i < sentences.Count; i++)
+        {
+            currentPageSentences.Add(sentences[i]);
+            currentWordCount += wordCounts[i];
+
+            var remainingSentences = sentences.Count - i - 1;
+            var remainingPages = pageCount - pagesCreated - 1;
+
+            if (remainingPages > 0 && currentWordCount >= targetPerPage && remainingSentences >= remainingPages)
+            {
+                pages.Add(string.Join(" ", currentPageSentences));
+                currentPageSentences = new List<string>();
+                currentWordCount = 0;
+                pagesCreated++;
+            }
+        }
+
+        if (currentPageSentences.Count > 0)
+        {
+            pages.Add(string.Join(" ", currentPageSentences));
+        }
+
+        return pages;
+    }
+    
 }
