@@ -182,7 +182,7 @@ Example format: [""Page 1 text here."", ""Page 2 text here.""]";
             ? $" Additional instructions for this scene: {extraInstructions}."
             : "";
 
-        var prompt = $"Using these exact reference characters, people, and animals, recreate the following scene as a warm children's storybook illustration: {sceneDescription}. The reference images show the specific individuals who must appear — do not invent new or different-looking characters. {characterNotes} For each person or animal shown in a reference image, precisely match their reference: same hair color/style, same eye color, same skin tone or fur color, same face shape and distinguishing features, same gender.{extraNote} Simply place these exact characters into the described scene, illustrated in a consistent storybook art style.";
+        var prompt = $"Using these exact reference characters, people, and animals, recreate the following scene as a warm children's storybook illustration: {sceneDescription}. The reference images show the specific individuals who must appear — do not invent new or different-looking characters. {characterNotes} For each person or animal shown in a reference image, precisely match their reference: same hair color/style, same eye color, same skin tone or fur color, same face shape and distinguishing features, same gender.{extraNote} Simply place these exact characters into the described scene, illustrated in a consistent storybook art style. Only include objects, props, and background elements explicitly mentioned in the scene description — do not add extra unrelated items, tools, or props that aren't part of the story.";
 
         var requestBody = new
         {

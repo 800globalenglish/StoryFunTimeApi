@@ -26,7 +26,7 @@ public class PdfService
                             var imagePath = Path.Combine(uploadsBasePath, page.CartoonImageUrl.TrimStart('/').Replace("uploads/", ""));
                             if (File.Exists(imagePath))
                             {
-                                column.Item().Image(imagePath).FitArea();
+                                column.Item().MaxHeight(350).Image(imagePath).FitArea();
                             }
                         }
                         column.Item().PaddingTop(15).Text(page.ScriptText ?? "").FontSize(16).AlignCenter();
