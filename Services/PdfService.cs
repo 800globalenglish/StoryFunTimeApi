@@ -19,6 +19,7 @@ public class PdfService
                 {
                     pdfPage.Size(PageSizes.A5);
                     pdfPage.Margin(30);
+                    pdfPage.Background(Colors.Black);
                     pdfPage.Content().Column(column =>
                     {
                         if (!string.IsNullOrWhiteSpace(page.CartoonImageUrl))
@@ -29,7 +30,7 @@ public class PdfService
                                 column.Item().MaxHeight(350).Image(imagePath).FitArea();
                             }
                         }
-                        column.Item().PaddingTop(15).Text(page.ScriptText ?? "").FontSize(16).AlignCenter();
+                        column.Item().PaddingTop(15).Text(page.ScriptText ?? "").FontSize(16).FontColor(Colors.White).AlignCenter();
                     });
                 });
             }
